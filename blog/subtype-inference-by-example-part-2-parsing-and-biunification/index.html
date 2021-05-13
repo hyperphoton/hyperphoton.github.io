@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="zh-cn">
+<head>
+    <meta charset="utf-8">
+    <meta name="HandheldFriendly" content="True">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="referrer" content="no-referrer-when-downgrade">
+
+    <title>[译]通过例子学子类型推理（二）：解析和双合一</title>
+    <meta name="description" content="">
+
+    <link rel="stylesheet" href="https:&#x2F;&#x2F;firecodelab.com&#x2F;main.css">
+
+    
+
+    
+    
+</head>
+<body>
+    <a class="skip-main" href="#main">Skip to content</a>
+    <div class="container">
+        <header>
+            <h1 class="site-header">
+                <a href="https:&#x2F;&#x2F;firecodelab.com">Fire Code</a>
+            </h1>
+            <nav>
+                
+                
+                
+                <a  href="&#x2F;blog&#x2F;">博客</a>
+                
+                
+                <a  href="&#x2F;about&#x2F;">关于</a>
+                
+                
+            </nav>
+        </header>
+        <main id="main" tabindex="-1">
+            
+
+<article class="post">
+    <header>
+        <h1>[译]通过例子学子类型推理（二）：解析和双合一</h1>
+    </header>
+
+    
+    <div class="article-info">
+        
+        <div class="article-date">2021-04-02</div>
+        
+        <div class="article-taxonomies">
+            
+                <ul class="article-tags">
+                    
+                    <li><a href="https://firecodelab.com/tags/translate/">#translate</a></li>
+                    
+                    <li><a href="https://firecodelab.com/tags/compiler/">#compiler</a></li>
+                    
+                    <li><a href="https://firecodelab.com/tags/type-inference/">#type inference</a></li>
+                    
+                </ul>
+            
+        </div>
+        
+        <div class="article-original">[<a href="https:&#x2F;&#x2F;blog.polybdenum.com&#x2F;2020&#x2F;07&#x2F;11&#x2F;subtype-inference-by-example-part-2-parsing-and-biunification.html" target="_blank">view original</a>]</div>
+        
+    </div>
+
+
+    <div class="content">
+        <p>在<a href="/blog/subtype-inference-by-example-part-1-introducing-cubiml">上周的文章</a>中，我们讨论了一种新的类型推理方法，称为<em>立方双合一</em> ，并介绍了 <a href="https://github.com/Storyyeller/cubiml-demo">cubiml</a>，这是一种用 Rust 编写的类 ML 的简单语言，它演示了立方双合一。本周，我们将介绍实现 cubiml 的第一步，以及对双合一的高层次概述。</p>
+<h2 id="jie-xi">解析</h2>
+<p>编译器的第一步是解析输入的源代码，并将其从纯文本转换为<a href="https://en.wikipedia.org/wiki/Abstract_syntax_tree">抽象语法树</a>（AST）。我强烈建议使用解析器生成器来完成这一步。解析器生成器是一种工具，它可以接收语言语法的声明性的、高层次的描述，并自动生成代码来解析它。</p>
+<p>一些流行的编程语言则使用手写的解析器，它允许对诸如编译器错误信息之类的东西进行更精细的控制，但代价是大大增加了维护负担。然而，如果你正在研究一种业余编程语言，你的时间是很宝贵的，所以尽可能提高可维护性是很重要的。如果你的语言获得了成功，你可以忧心以后写一个自定义的解析器，由你的崇拜者军团的志愿者努力相助。</p>
+<p>此外，使用解析器生成器可以让你很容易地对语言语法的变化进行试验，这对于新生的编程语言来说是极其重要的，而对于真正有用户的语言来说，基本上是无关紧要的。有了解析器生成器，对语言语法的改变几乎就像简单地描述这种改变一样简单，因为生成器为你做了所有繁重的工作。</p>
+<p>在 cubiml 的例子中，我使用的是解析器生成器 <a href="https://github.com/lalrpop/lalrpop">LALRPOP</a>，它以下面这样的格式接收语言语法的描述。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#b48ead;">use super</span><span style="color:#c0c5ce;">::ast; </span><span style="color:#65737e;">// super 而不是 self，因为 lalrpop 将其封装在一个内部模块中。
+
+
+</span><span style="color:#c0c5ce;">grammar;
+
+Ident: String = &lt;r</span><span style="background-color:#bf616a;color:#2b303b;">&quot;</span><span style="color:#c0c5ce;">[a-z_]\w*&quot;</span><span style="color:#a3be8c;">&gt; =&gt; String::from(&lt;&gt;);
+Tag: String = &lt;r</span><span style="color:#c0c5ce;">&quot;`[A-Z]\w*&quot;</span><span style="color:#a3be8c;">&gt; =&gt; String::from(&lt;&gt;);
+
+// 确保 __proto__ 不被视为有效的标识符。
+Illegal = </span><span style="color:#c0c5ce;">&quot;__proto__&quot;</span><span style="color:#a3be8c;">;
+
+SepList&lt;T, Sep&gt;: Vec&lt;T&gt; = {
+    &lt;v:(&lt;T&gt; Sep)*&gt; &lt;e:T&gt; =&gt; {
+        let mut v = v;
+        v.push(e);
+        v
+    }
+};
+SepListOpt&lt;T, Sep&gt;: Vec&lt;T&gt; = {
+    SepList&lt;T, Sep&gt;,
+    =&gt; Vec::new(),
+};
+
+VarOrLiteral: Box&lt;ast::Expr&gt; = {
+    Ident =&gt; Box::new(
+        match &lt;&gt;.as_str() {
+            </span><span style="color:#c0c5ce;">&quot;</span><span style="color:#d08770;">true</span><span style="color:#c0c5ce;">&quot;</span><span style="color:#a3be8c;"> =&gt; ast::Expr::Literal(ast::Literal::Bool(true)),
+            </span><span style="color:#c0c5ce;">&quot;</span><span style="color:#d08770;">false</span><span style="color:#c0c5ce;">&quot;</span><span style="color:#a3be8c;"> =&gt; ast::Expr::Literal(ast::Literal::Bool(false)),
+            _ =&gt; ast::Expr::Variable(&lt;&gt;)
+        }
+    ),
+}
+
+If: Box&lt;ast::Expr&gt; = {
+    </span><span style="color:#c0c5ce;">&quot;</span><span style="color:#b48ead;">if</span><span style="color:#c0c5ce;">&quot;</span><span style="color:#a3be8c;"> &lt;Expr&gt; </span><span style="color:#c0c5ce;">&quot;then&quot;</span><span style="color:#a3be8c;"> &lt;Expr&gt; </span><span style="color:#c0c5ce;">&quot;</span><span style="color:#b48ead;">else</span><span style="color:#c0c5ce;">&quot;</span><span style="color:#a3be8c;"> &lt;Expr&gt; =&gt; Box::new(ast::Expr::If(&lt;&gt;)),
+}
+
+FuncDef: Box&lt;ast::Expr&gt; = {
+    </span><span style="color:#c0c5ce;">&quot;fun&quot;</span><span style="color:#a3be8c;"> &lt;Ident&gt; </span><span style="color:#c0c5ce;">&quot;-&gt;&quot;</span><span style="color:#a3be8c;"> &lt;Expr&gt; =&gt; Box::new(ast::Expr::FuncDef(&lt;&gt;)),
+}
+Call: Box&lt;ast::Expr&gt; = {
+    CallExpr CaseExpr =&gt; Box::new(ast::Expr::Call(&lt;&gt;)),
+}
+
+
+KeyPairExpr = {
+    &lt;Ident&gt; </span><span style="color:#c0c5ce;">&quot;=&quot;</span><span style="color:#a3be8c;"> &lt;Expr&gt;,
+}
+Record: Box&lt;ast::Expr&gt; = {
+    </span><span style="color:#c0c5ce;">&quot;{&quot;</span><span style="color:#a3be8c;"> &lt;SepListOpt&lt;KeyPairExpr, </span><span style="color:#c0c5ce;">&quot;;&quot;</span><span style="color:#a3be8c;">&gt;&gt; </span><span style="color:#c0c5ce;">&quot;}&quot;</span><span style="color:#a3be8c;"> =&gt; Box::new(ast::Expr::Record(&lt;&gt;)),
+}
+FieldAccess: Box&lt;ast::Expr&gt; = {
+    &lt;SimpleExpr&gt; </span><span style="color:#c0c5ce;">&quot;.&quot;</span><span style="color:#a3be8c;"> &lt;Ident&gt; =&gt; Box::new(ast::Expr::FieldAccess(&lt;&gt;)),
+}
+
+Case: Box&lt;ast::Expr&gt; = {
+    &lt;Tag&gt; &lt;CaseExpr&gt; =&gt; Box::new(ast::Expr::Case(&lt;&gt;)),
+}
+
+CaseMatchPattern = {
+    Tag Ident,
+}
+MatchArm = {
+    &lt;CaseMatchPattern&gt; </span><span style="color:#c0c5ce;">&quot;-&gt;&quot;</span><span style="color:#a3be8c;"> &lt;CallExpr&gt;,
+}
+Match: Box&lt;ast::Expr&gt; = {
+    </span><span style="color:#c0c5ce;">&quot;</span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;">&quot;</span><span style="color:#a3be8c;"> &lt;Expr&gt; </span><span style="color:#c0c5ce;">&quot;with&quot;</span><span style="color:#a3be8c;"> &lt;SepList&lt;MatchArm, </span><span style="color:#c0c5ce;">&quot;|&quot;</span><span style="color:#a3be8c;">&gt;&gt; =&gt; Box::new(ast::Expr::Match(&lt;&gt;)),
+}
+
+LetLHS = {
+    </span><span style="color:#c0c5ce;">&quot;</span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;">&quot;</span><span style="color:#a3be8c;"> &lt;Ident&gt; </span><span style="color:#c0c5ce;">&quot;=&quot;</span><span style="color:#a3be8c;"> &lt;Expr&gt;,
+}
+LetRHS = {
+    </span><span style="color:#c0c5ce;">&quot;in&quot;</span><span style="color:#a3be8c;"> &lt;Expr&gt;,
+}
+Let: Box&lt;ast::Expr&gt; = {
+    &lt;LetLHS&gt; &lt;LetRHS&gt; =&gt; Box::new(ast::Expr::Let(&lt;&gt;)),
+}
+
+
+LetRecDef = {
+    &lt;Ident&gt; </span><span style="color:#c0c5ce;">&quot;=&quot;</span><span style="color:#a3be8c;"> &lt;FuncDef&gt;,
+}
+LetRecLHS = {
+    </span><span style="color:#c0c5ce;">&quot;</span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;">&quot; &quot;rec&quot;</span><span style="color:#a3be8c;"> &lt;SepList&lt;LetRecDef, </span><span style="color:#c0c5ce;">&quot;and&quot;</span><span style="color:#a3be8c;">&gt;&gt;,
+}
+LetRec: Box&lt;ast::Expr&gt; = {
+     &lt;LetRecLHS&gt; &lt;LetRHS&gt; =&gt; Box::new(ast::Expr::LetRec(&lt;&gt;)),
+}
+
+
+SimpleExpr = {
+    FieldAccess,
+    Record,
+    VarOrLiteral,
+    </span><span style="color:#c0c5ce;">&quot;(&quot;</span><span style="color:#a3be8c;"> &lt;Expr&gt; </span><span style="color:#c0c5ce;">&quot;)&quot;</span><span style="color:#a3be8c;">,
+}
+CaseExpr = {
+    SimpleExpr,
+    Case,
+}
+CallExpr = {
+    CaseExpr,
+    Call,
+}
+Expr = {
+    CallExpr,
+    FuncDef,
+    If,
+    Let,
+    LetRec,
+    Match,
+}
+
+TopLevelItem: ast::TopLevel = {
+    &lt;LetLHS&gt; =&gt; ast::TopLevel::LetDef(&lt;&gt;),
+    &lt;LetRecLHS&gt; =&gt; ast::TopLevel::LetRecDef(&lt;&gt;),
+    &lt;Expr&gt; =&gt; ast::TopLevel::Expr(*&lt;&gt;),
+}
+
+pub Script = {
+   &lt;SepList&lt;TopLevelItem, </span><span style="color:#c0c5ce;">&quot;;&quot;</span><span style="color:#a3be8c;">&gt;&gt;
+}
+
+</span></code></pre>
+<p>解析器的输出是一棵抽象语法树，一棵由代表了输入源代码中的表达式和其他一些语法的节点组成的树。由于 Rust 是静态类型的，我们必须为 AST 定义类型。</p>
+<p>首先，我们有一个字面量类型。<code>enum</code> 是 Rust 的 sum 类型的形式。一个 enum 类型声明给出了一个命名变体的列表，以及与每个变体相关的数据。在本例中，我们只有一种类型的字面量 - 布尔，但稍后会添加更多类型。标签是 <code>Bool</code> ，相关的数据只是一个 <code>bool</code> 值，给出了解析后的字面量值。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">#[</span><span style="color:#bf616a;">derive</span><span style="color:#c0c5ce;">(Debug)]
+</span><span style="color:#b48ead;">pub enum </span><span style="color:#c0c5ce;">Literal {
+    Bool(</span><span style="color:#b48ead;">bool</span><span style="color:#c0c5ce;">),
+}
+</span></code></pre>
+<p>AST 的主要类型是 <code>Expr</code>，代表 cubiml 表达式。它有函数调用、case 对象、字段访问、函数定义等变体。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#b48ead;">type </span><span style="color:#c0c5ce;">VarDefinition = (String, Box&lt;Expr&gt;);
+</span><span style="color:#b48ead;">type </span><span style="color:#c0c5ce;">CaseMatchPattern = (String, String);
+
+#[</span><span style="color:#bf616a;">derive</span><span style="color:#c0c5ce;">(Debug)]
+</span><span style="color:#b48ead;">pub enum </span><span style="color:#c0c5ce;">Expr {
+    Call(Box&lt;Expr&gt;, Box&lt;Expr&gt;),
+    Case(String, Box&lt;Expr&gt;),
+    FieldAccess(Box&lt;Expr&gt;, String),
+    FuncDef(String, Box&lt;Expr&gt;),
+    If(Box&lt;Expr&gt;, Box&lt;Expr&gt;, Box&lt;Expr&gt;),
+    Let(VarDefinition, Box&lt;Expr&gt;),
+    LetRec(Vec&lt;VarDefinition&gt;, Box&lt;Expr&gt;),
+    Literal(Literal),
+    Match(Box&lt;Expr&gt;, Vec&lt;(CaseMatchPattern, Box&lt;Expr&gt;)&gt;),
+    Record(Vec&lt;(String, Box&lt;Expr&gt;)&gt;),
+    Variable(String),
+}
+</span></code></pre>
+<p>由于表达式可以递归地包含其他表达式，我们必须将它们装箱。在 Rust 中，默认情况下，所有的东西都是<em>按值</em>包含在结构或枚举中的（而不是像 Java、Python 等那样按指针包含），所以一个递归地包含自己类型值的结构或枚举必须是无限大的，因此编译器不允许这样做。为了打破这种循环，我们到处使用 <code>Box&lt;Expr&gt;</code>，它是一个指向堆分配的 <code>Expr</code> 的指针。</p>
+<p>Cubiml 在编写过程中，强调简单性和代码的清晰性，而不是性能。例如，AST 中的每一个节点都会导致一个单独的分配。在实践中，Rust 项目很可能会考虑在竞技场中分配树节点以提高效率，但这样做会给代码增加噪音和混乱，有损于解释如何实现类型推理的目标。同样，cubiml 使用 <code>String</code>，一个指向堆上单独分配的字符串的指针，来引用源代码中的标识符和标记，而不是像典型的 Rust 项目那样，简单地将指针存储到输入源代码缓冲区中。</p>
+<p>最后，我们有一个 AST 节点类型用于顶层定义。这可以是普通的表达式，或者是 <code>let</code> 或 <code>let rec</code> 的定义，它没有右手边（<code>in &lt;expr&gt;</code> 部分）。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">#[</span><span style="color:#bf616a;">derive</span><span style="color:#c0c5ce;">(Debug)]
+</span><span style="color:#b48ead;">pub enum </span><span style="color:#c0c5ce;">TopLevel {
+    Expr(Expr),
+    LetDef(VarDefinition),
+    LetRecDef(Vec&lt;VarDefinition&gt;),
+}
+</span></code></pre><h2 id="lei-xing-jian-cha-qi-he-xin-jie-kou">类型检查器核心接口</h2>
+<p>现在我们有了 AST，下一步就是对它进行类型检查。在 cubiml 中，类型检查器分为前端和核心。前端处理语言的语法特定细节，将每个表达式转换为内部类型，并向类型检查器核心发出调用。然后核心会处理这些调用，如果有不一致的地方就返回类型错误。</p>
+<p>我们稍后将介绍类型检查器核心的实现，现在，你只需要知道前端将调用的接口。它看起来像这样：</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#b48ead;">pub struct </span><span style="color:#c0c5ce;">Value;
+</span><span style="color:#b48ead;">pub struct </span><span style="color:#c0c5ce;">Use;
+
+</span><span style="color:#b48ead;">impl </span><span style="color:#c0c5ce;">TypeCheckerCore {
+    </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">var</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">) -&gt; (Value, Use);
+
+    </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">bool</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">) -&gt; Value;
+    </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">bool_use</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">) -&gt; Use;
+
+    </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">func</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">arg</span><span style="color:#c0c5ce;">: Use, </span><span style="color:#bf616a;">ret</span><span style="color:#c0c5ce;">: Value) -&gt; Value;
+    </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">func_use</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">arg</span><span style="color:#c0c5ce;">: Value, </span><span style="color:#bf616a;">ret</span><span style="color:#c0c5ce;">: Use) -&gt; Use;
+
+    </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">obj</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">fields</span><span style="color:#c0c5ce;">: Vec&lt;(String, Value)&gt;) -&gt; Value;
+    </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">obj_use</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">field</span><span style="color:#c0c5ce;">: (</span><span style="color:#bf616a;">String</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">Use</span><span style="color:#c0c5ce;">)) -&gt; Use;
+
+    </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">case</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">case</span><span style="color:#c0c5ce;">: (</span><span style="color:#bf616a;">String</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">Value</span><span style="color:#c0c5ce;">)) -&gt; Value;
+    </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">case_use</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">cases</span><span style="color:#c0c5ce;">: Vec&lt;(String, Use)&gt;) -&gt; Use;
+
+    </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">flow</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">lhs</span><span style="color:#c0c5ce;">: Value, </span><span style="color:#bf616a;">rhs</span><span style="color:#c0c5ce;">: Use) -&gt; Result&lt;(), TypeError&gt;;
+}
+</span></code></pre>
+<p>这需要一点解释。在 cubiml 中，类型有两种不同的种类 - <code>Value</code> 和 <code>Use</code>。前者是针对程序值的类型，后者是针对值<em>使用</em>的类型，也就是给定表达式对其操作数的约束。</p>
+<h3 id="shuang-he-yi">双合一</h3>
+<p>传统的 Hindley-Milner 类型推理是基于<em>合一</em>，即连续迫使两个未知类型<em>相等</em>的过程，直到遇到矛盾或满足所有程序约束。子类型推理历来具有很大的挑战性，其中一个原因是<a href="https://www.sciencedirect.com/science/article/pii/S0890540183710035">半合一定理</a>，该定理非常宽泛地指出，求解一个任意的相等和子类型约束系统是无法确定的。在<em>代数子类型</em>中，Dolan 介绍了一个过程，他称之为<em>双合一</em>，同样是非常宽泛地讲，通过<em>只</em>有子类型约束而不允许有相等约束，解决了不可确定性问题。</p>
+<p>然而这本身并不足以使类型推理变得可决断，因为你可以用一对子类型约束 <code>a &lt;= b</code> 和 <code>b &lt;= a</code> 来模拟相等约束 <code>a = b</code>。双合一的另一个关键部分是<em>极化</em>类型系统。极化的意思是将类型分为两种，传统上称为正型和负型，但我在这里将其称为<em>值</em>和<em>用</em>，以便于理解。为了避免使半合一无法确定的无限循环，双合一限制所有子类型约束的形式为 <code>v &lt;= u</code>，其中 v 是值类型，u 是使用类型。这些约束可以自然地解释为要求程序值与其使用方式兼容。</p>
+<h3 id="lei-xing-bian-liang">类型变量</h3>
+<p>本系统下类型检查的基本原理相当简单。为每个表达式创建一个值类型，为每个表达式操作数创建一个使用类型，并在每个值类型和每个使用它的上下文之间创建一个子类型约束，以确保一致性。我们把这些约束条件 <code>v &lt;= u</code> 称为值<em>跟随</em>其用法，它们是用 <code>TypeCheckerCore</code> 上的 <code>flow</code> 方法创建的。</p>
+<p>然而，系统中还有一个小问题 - 变量。在双合一下，变量是由一<em>对</em>类型来表示的 - 一个值类型和一个使用类型。这就是为什么上面的 <code>TypeCheckerCore</code> 的 <code>var</code> 方法返回的是一对 <code>(Value，Use)</code>。从概念上讲，值类型代表了从变量中<em>读取</em>的类型，而使用类型代表了<em>分配</em>给该变量的类型。自然地，我们需要约束 <code>u &lt;= v</code>，即对变量的每一次写入都与从该变量的每一次读取兼容。然而，这种类型的约束是不允许的，因为当它与 <code>v &lt;= u</code> 约束结合在一起时，可能会在类型检查器中产生无限循环。</p>
+<p>解决的办法是，我们不直接表示这种约束，而只是确保<em>跟随</em>关系的传递性。对于每个变量 <code>(v1，u1)</code>，以及每个跟随 <code>u1</code> 的值类型 <code>v2</code> 和每个 <code>v1</code> 跟随的使用类型 <code>u2</code>，我们都添加 <code>v2 </code> 跟随 <code>u2</code> 的约束。本质上，变量的行为就像类型图中的小隧道或虫洞。无论从一端进入的是什么，都会从另一端出来。</p>
+<p>理论讲完了，类型检查器前端的实际实现就相当简单了。然而，仍然有相当多的代码需要处理，所以我将在<a href="/blog/subtype-inference-by-example-part-3-the-typechecker-frontend">下周的文章</a>中介绍。</p>
+<h3 id="pang-bai-lei-xing-da-yin-he-jian-hua">旁白：类型打印和简化</h3>
+<p>眼尖的人可能已经注意到，上面的类型检查器核心接口没有任何打印或显示类型的方法。它只是返回一个 <code>TypeError</code> 或者在成功时不返回任何内容。这是故意的。虽然可以修改系统来打印出类型，但我认为除了调试类型检查器之外，这并没有什么用。</p>
+<p>在显式类型系统中，由于人类要不断地写类型，所以类型很短，也很好记，因此自然会以某种方式保持短小（尽管有 C++ 模板爆炸的问题）。然而，在大规模类型推理的情况下，类型反而是自动生成的保证程序一致性所需的信息摘要，没有选择压力来保持类型描述的简洁，因此往往非常大，不适合人类使用。从某种意义上说，推断的类型是检测程序中 bug 的过程中的<em>副产品</em>，而不是<em>产品</em>。这意味着，一般来说，显式显示推断类型是没用的。</p>
+<p>现有的类型推导语言如 Haskell 和 OCaml 已经在一定程度上存在这个问题，但由于现实世界的代码往往会大量使用显式类型注释，这个问题得到了缓解。此外，传统的基于合一的推理往往会导致更小的推断类型，因为类型变量被人为地限制为<em>等值</em>，因此可以被识别和简化。然而，在使用子类型化时，推断的类型更加通用，因此要大得多，也更难理解。</p>
+<p>自然而然地，我们会尝试简化类型，或者将它们转换为更小的等价表示，既是为了使它们在打印出来时更容易阅读，也是为了在类型检查器的正常操作中减少被操作类型的大小，从而提高性能。然而，在这样做的时候，你必须非常小心，让简化过程不比类型检查本身慢！使用 <code>O(n^4)</code> 简化算法来加速 <code>O(n^3)</code> 类型推理算法是没有意义的。</p>
+<p>特别是，<em>代数子类型化</em>中描述的主要简化算法实际上具有<em>指数级</em>的最坏情况复杂度，病态情况经常出现在实践中，也出现在理论上。事实上，cubiml 比代数子类型化快的原因之一就是<em>不</em>做任何简化。</p>
+<p>简化无法改善立方双合一的最坏情况复杂度，因为病理情况无论如何也无法简化。但是，现实世界代码往往包含很多重复的代码构造，这些构造很容易被简化掉，所以简化有可能提高现实世界代码的类型检查性能。想出既快速又实用的简化过程是一个挑战，但我认为这是个值得探索的途径。</p>
+<p>不管怎么说，这个题外话/引子说完了，是时候继续教程了。在<a href="/blog/subtype-inference-by-example-part-3-the-typechecker-frontend">下一篇</a>中，我们将介绍 cubiml 的类型检查器前端的实现。</p>
+
+    </div>
+
+
+</article>
+
+
+        </main>
+        <footer>
+            <p>
+                © 2021 firecodelab.com
+            </p>
+            <p>
+                
+                
+            </p>
+        </footer>
+    </div>
+</body>
+</html>

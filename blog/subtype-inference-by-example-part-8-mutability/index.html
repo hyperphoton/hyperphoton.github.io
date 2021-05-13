@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="zh-cn">
+<head>
+    <meta charset="utf-8">
+    <meta name="HandheldFriendly" content="True">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="referrer" content="no-referrer-when-downgrade">
+
+    <title>[译]通过例子学子类型推理（八）：可变性</title>
+    <meta name="description" content="">
+
+    <link rel="stylesheet" href="https:&#x2F;&#x2F;firecodelab.com&#x2F;main.css">
+
+    
+
+    
+    
+</head>
+<body>
+    <a class="skip-main" href="#main">Skip to content</a>
+    <div class="container">
+        <header>
+            <h1 class="site-header">
+                <a href="https:&#x2F;&#x2F;firecodelab.com">Fire Code</a>
+            </h1>
+            <nav>
+                
+                
+                
+                <a  href="&#x2F;blog&#x2F;">博客</a>
+                
+                
+                <a  href="&#x2F;about&#x2F;">关于</a>
+                
+                
+            </nav>
+        </header>
+        <main id="main" tabindex="-1">
+            
+
+<article class="post">
+    <header>
+        <h1>[译]通过例子学子类型推理（八）：可变性</h1>
+    </header>
+
+    
+    <div class="article-info">
+        
+        <div class="article-date">2021-04-08</div>
+        
+        <div class="article-taxonomies">
+            
+                <ul class="article-tags">
+                    
+                    <li><a href="https://firecodelab.com/tags/translate/">#translate</a></li>
+                    
+                    <li><a href="https://firecodelab.com/tags/compiler/">#compiler</a></li>
+                    
+                    <li><a href="https://firecodelab.com/tags/type-inference/">#type inference</a></li>
+                    
+                </ul>
+            
+        </div>
+        
+        <div class="article-original">[<a href="https:&#x2F;&#x2F;blog.polybdenum.com&#x2F;2020&#x2F;08&#x2F;22&#x2F;subtype-inference-by-example-part-8-mutability.html" target="_blank">view original</a>]</div>
+        
+    </div>
+
+
+    <div class="content">
+        <p><a href="/blog/subtype-inference-by-example-part-7-spanned-error-messages">上周</a>，我们为 cubiml 编译器添加了改进的错误信息。本周，我们将回归到功能开发，并为语言和类型系统添加可变性。</p>
+<p>到目前为止，cubiml 中的所有东西都是不可变的，这意味着一旦创建了值，就不能改变。可变性经常被人诟病，因为它增加了出现问题的可能性，但它也让很多算法的表达更自然，对于编写高效代码来说是必不可少的。我们将以 ML 风格<em>引用</em>的形式实现可变性。</p>
+<h2 id="yin-yong">引用</h2>
+<p>传统的命令式语言支持多种形式的可变性 - 可变的局部变量、可变的结构字段等。然而，为了保持 cubiml 的简单性，我们在类型系统中用单一的专用功能和最小的语法糖来实现每个概念。例如，cubiml 函数总是只接收一个参数。如果你想让函数接收多个参数，可以通过向函数传递含多个字段的记录来模拟。</p>
+<p>同样，在 cubiml 中所有的可变性都是通过引用类型来实现的。你可以通过在记录字段中存储引用来模拟传统的可变字段，通过在变量中存储引用来模拟可变的变量，以此类推。</p>
+<p>ML 引用和你可能习惯的不太一样。它们是指向堆上一个可变的、垃圾回收的存储位置的指针，支持三种操作：</p>
+<ul>
+<li><code>ref x</code> 创建新引用，初始值是 <code>x</code>。注意，这将把 <code>x</code> 的值<em>复制</em>到新位置，并返回指向该位置的指针。<code>ref foo.bar</code> 返回指向用 <code>foo.bar</code> 值初始化的位置的指针，而不是指向 <code>foo</code> 字段本身的指针。</li>
+<li><code>！r</code> <em>解引用</em>引用 <code>r</code> 并返回当前存储在里面的任何值。这是另一个 ML 风格和 C 风格语法不同的令人困惑的例子。</li>
+<li><code>r := x</code> 将 <code>x</code> <em>存储</em>在引用 <code>r</code> 内，覆盖之前存储的任何值。传统上，这个操作会返回单元值（即空记录），但我们会像 JavaScript 一样遵循 C 风格赋值的方法，赋值会返回新值，因为在编译成 JavaScript 时，这样更容易实现。你可能会想在自己的语言中做不同的事情，这是一个简单的改变。</li>
+</ul>
+<p>请注意，引用可以被别名。例如，我们可以创建引用 <code>a</code> 并将其复制到变量 <code>b</code> 中。然后通过 <code>b</code> 所做的任何更改都可以通过 <code>a</code> 看到，反之亦然，如下面的 REPL 会话所示。</p>
+<pre style="background-color:#2b303b;">
+<code><span style="color:#c0c5ce;">&gt;&gt; let a = ref 42
+
+ref 42
+
+&gt;&gt; let b = a
+
+ref 42
+
+&gt;&gt; b := 77
+
+77
+
+&gt;&gt; !a
+
+77
+</span></code></pre>
+<p>我们还看到，创建引用并不影响原值。</p>
+<pre style="background-color:#2b303b;">
+<code><span style="color:#c0c5ce;">&gt;&gt; let foo = {bar = 12}
+
+{bar=12}
+
+&gt;&gt; let r = ref foo.bar
+
+ref 12
+
+&gt;&gt; r := 77
+
+77
+
+&gt;&gt; foo.bar
+
+12
+</span></code></pre><h2 id="bian-ti">变体</h2>
+<p>对核心类型系统添加引用之前，我们需要先介绍<em>变体</em>的概念。我们在前面的文章中，在处理函数类型时简单地提到了这一点，现在是时候更深入地解释它了。</p>
+<p>在考虑泛型子类型时，主要有两种类型的类型参数，<em>协变</em>和<em>逆变</em>。</p>
+<p><em>协变</em>类型是指父类型与类型参数遵循相同的子类型关系。例如，如果有一个含协变类型参数 <code>T</code> 的泛型 <code>Foo[T]</code>，并有类型 <code>A</code> 和 <code>B</code> ，其中 <code>A</code> 是 <code>B</code> 的子类型，那么 <code>Foo[A]</code> 就是 <code>Foo[B]</code> 的子类型。大多数情况下，这就是你想要的。</p>
+<p><em>逆变</em>类型是指子类型关系被<em>反转</em>的类型。如果有类型 <code>A</code> 和 <code>B</code> ，其中 <code>A</code> 是 <code>B</code> 的子类型，那么 <code>Foo[B]</code> 就是 <code>Foo[A]</code> 的子类型。最常见的例子是函数的参数类型。假设你有一个函数，它的参数是 <code>A</code>。你可以用 <code>A</code> 来调用它，但不能用 <code>B</code> 来调用，因为 <code>B</code> 是 <code>A</code> 的超类型，也就是说，它比 <code>A</code> 更不细化。现在考虑一个函数，它参数是 <code>B</code>。你可以用 <code>A</code> 来调用它，也可以用 <code>B</code> 来调用它。这个函数严格来说比以前更通用，所以它是需要 <code>A</code> 的函数的<em>子类型</em>。事实上，函数的参数类型是逆变的，返回类型是协变的。</p>
+<p>然而，还有第三种可能的变体：<em>不变的</em>类型参数。顾名思义，不变类型参数不会在其父类中引起任何子类型关系。如果有类型 <code>A</code> 和 <code>B</code>，其中 <code>A</code> 是 <code>B</code> 的子类型，那么 <code>Foo[A]</code> 和 <code>Foo[B]</code> 之间在任何一个方向上都不存在子类型关系。只有当它们的类型参数<em>相等</em>的时候，我们才能把一个 <code>Foo</code> 赋给另一个 <code>Foo</code>。</p>
+<p>不变类型通常用于可变数据结构。例如，考虑列表类型 <code>List[T]</code> 应该是什么变体。如果列表是不可变的（只读），那么答案很简单 - <code>T</code> 应该是协变的。假设又有类型 <code>A &lt; B</code>，考虑 <code>List[A]</code> 和 <code>List[B]</code>。由于我们谈论的是不可变的列表，唯一可用的操作就是从它们中读取。<code>List[B]</code> 的约束是 <code>get()</code> 总是返回 <code>B</code>。现在看看 <code>List[A]</code>。<code>get()</code> 返回 <code>A</code>，但是 <code>A</code> 是 <code>B</code> 的子类型，所以它也返回 <code>B</code>! 因此，<code>List[A]</code> 严格来说更通用，我们有 <code>List[A] &lt; List[B]</code>。</p>
+<p>当列表可变时，一切都会改变。<code>List[B]</code> 的约束是 <code>set()</code> 接收 <code>B</code>。然而 <code>List[A]</code> 的 <code>set()</code> 方法不能处理任意的 <code>B</code>。它只能处理 <code>A</code>，它是 <code>B</code> 的子类型。因此，<code>List[A]</code> 不能成为 <code>List[B]</code> 的子类型。但是，<code>List[B]</code> 也不能是 <code>List[A]</code> 的子类型，因为它的 <code>get()</code> 方法只返回 <code>B</code>，而不是 <code>A</code>。因此，当涉及到<em>可变</em>数据结构时，相关类型参数必须是不变的。</p>
+<p>说句题外话，Java 在设计最初的语言时，在数组上就臭名昭著地搞错了这一点。尽管 Java 的数组是实际上是可变的，但他们还是决定让它们成为协变的，而不是不变的。这意味着</p>
+<pre style="background-color:#2b303b;">
+<code class="language-java" data-lang="java"><span style="color:#ebcb8b;">Object</span><span style="color:#b48ead;">[]</span><span style="color:#c0c5ce;"> foo = </span><span style="color:#b48ead;">new </span><span style="color:#ebcb8b;">String</span><span style="color:#c0c5ce;">[</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">];
+foo[</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">] = </span><span style="color:#b48ead;">new </span><span style="color:#ebcb8b;">Integer</span><span style="color:#c0c5ce;">(</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">);
+</span></code></pre>
+<p>是有效的 Java 代码，编译时没有错误。当你试图将 <code>Integer</code> 存储在不能实际处理它的数组中时（由于被创建为只能容纳 <code>String</code>），你会<em>在运行时</em>得到一个 <code>ArrayStoreException</code>。</p>
+<h3 id="si-wang-bu-bian-xing">死亡不变性！</h3>
+<p>此时，你可能已经注意到一个问题。双合一算法就是要传播<em>子类型</em>约束。在 <code>check_heads</code> 函数中，当检查非原生类型时，我们会在组件类型之间创建新的流（即子类型）关系，要么是协变类型的的同一方向，要么是逆变类型的相反方向。然而，对于不变类型，我们必须以某种方式在组件类型之间创建<em>相等</em>约束来代替，而双合一与相等约束是不兼容的。</p>
+<p>这个难题的解决方案是认识到，不变性并不是真正的基本概念，只是在描述类型和合并该类型的协变和逆变部分时不精确的结果。</p>
+<p>为了说明这一点，我们以之前的可变列表为例，为它写出一个伪代码接口。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-java" data-lang="java"><span style="color:#b48ead;">class </span><span style="color:#ebcb8b;">List</span><span style="color:#c0c5ce;">[</span><span style="color:#ebcb8b;">T</span><span style="color:#c0c5ce;">] {
+    </span><span style="color:#bf616a;">get</span><span style="color:#c0c5ce;">(index: </span><span style="color:#b48ead;">int</span><span style="color:#c0c5ce;">) -&gt; </span><span style="color:#ebcb8b;">T</span><span style="color:#c0c5ce;">;
+    </span><span style="color:#bf616a;">set</span><span style="color:#c0c5ce;">(index: </span><span style="color:#b48ead;">int</span><span style="color:#c0c5ce;">, value: </span><span style="color:#ebcb8b;">T</span><span style="color:#c0c5ce;">) -&gt; void;
+}
+</span></code></pre>
+<p>如果单独看每个方法，就没有任何问题。在 <code>get</code> 中，<code>T</code> 只作为返回类型出现，这意味着它可以安全地协变。在 <code>set</code> 中，<code>T</code> 只作为参数出现，这意味着它可以安全地逆变。需要 <code>T</code> 不变的唯一原因是，我们在这两种情况下都使用了<em>单一</em>类型参数。</p>
+<p>因此，消除不变性的解决方案是将每个不变的类型参数替换成<em>一对</em>类型参数，一个是协变，一个是逆变。在这种情况下，我们可能有 <code>List[W，R]</code> 类型，其中协变 <code>R</code> 参数描述了可以从列表中<em>读取</em>的类型，而逆变 <code>W</code> 参数描述了可以<em>写入</em>列表的类型。</p>
+<p>如果这听起来很像之前在类型检查器中处理变量的方式，那么恭喜，你已经上手了。实际上，这也是我们如何解决确保新的 <code>W</code> 参数被约束为 <code>R</code> 参数的子类型的问题 - 也就是说，从列表中的每一次读取都可以看到写入该列表的每一个类型。我们可以利用现有的类型检查器设计，只需创建一个变量节点，并将其两个“端”作为两个类型参数即可!</p>
+<h2 id="shi-xian">实现</h2>
+<p>像往常一样，我们先将新的操作添加到 AST 中。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">     LetRec(Vec&lt;VarDefinition&gt;, Box&lt;Expr&gt;),
+     Literal(Literal, Spanned&lt;String&gt;),
+     Match(Box&lt;Expr&gt;, Vec&lt;(Spanned&lt;CaseMatchPattern&gt;, Box&lt;Expr&gt;)&gt;, Span),
++    NewRef(Box&lt;Expr&gt;, Span),
+     Record(Spanned&lt;Vec&lt;(Spanned&lt;String&gt;, Box&lt;Expr&gt;)&gt;&gt;),
++    RefGet(Spanned&lt;Box&lt;Expr&gt;&gt;),
++    RefSet(Spanned&lt;Box&lt;Expr&gt;&gt;, Box&lt;Expr&gt;),
+     Variable(Spanned&lt;String&gt;),
+ }
+</span></code></pre><h3 id="yu-fa">语法</h3>
+<p>当要在语言中加入新语法时，主要的复杂问题是决定使用哪个优先级。当我在选择优先级的时候，有几个考虑因素。</p>
+<ul>
+<li>解引用是简单操作，你很可能想经常做，而且是在更复杂的表达式中。例如，如果有两个整型引用 <code>a</code> 和 <code>b</code>，你可能希望能够相加它们的值，所以像 <code>!a + !b</code> 这样的东西应该可以使用，而不需要括号。同样，<code>p := !p + 1</code> 也需要可以工作。</li>
+<li>你应该能够很容易地解引用嵌套的引用链，例如 <code>!!r</code>。</li>
+<li>然而，解引用 <code>SimpleExpr</code> 会导致与字段访问的冲突，因为它使 <code>!a.b</code> 这样的代码变得模棱两可 - 应该是 <code>(!a).b</code> 还是 <code>!(a.b)</code> ？我想大多数人都会期待后者，所以我把它放在 <code>SimpleExpr</code> 和 <code>CaseExpr</code> 之间的新优先级中。</li>
+<li><code>ref x</code> 使用与函数调用相同的语法（<code>f x</code>），所以给它与函数调用相同的优先级似乎是有道理的，但这样做会引起冲突，而且在任何情况下都不会有很好的效果，因为函数调用是左结合的。因此，我把它放在 <code>CaseExpr</code> 下的级别上，它仍然允许期望的语法，比如传递对函数调用的引用（<code>f ref x</code>），创建对 case 类型的引用（<code>ref `Foo {}</code>）。</li>
+<li>很少会用到获取引用赋值的值(<code>r := x</code>)，所以我把它放在最低的优先级。</li>
+<li>在 <code>a := b := c</code> 的情况下，将其解析为 <code>(a := b) := c</code> 是没有意义的，所以左边至少需要是 <code>CompareExpr</code>。然而，赋值给运算符的结果是没有意义的（反正它们只返回基础类型），所以我把左边一直提升到 <code>CallExpr</code>。</li>
+</ul>
+<p>总之，说完了这些，下面是新的语法规则。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">@@ -</span><span style="color:#d08770;">113</span><span style="color:#c0c5ce;">,</span><span style="color:#d08770;">6 </span><span style="color:#c0c5ce;">+</span><span style="color:#d08770;">113</span><span style="color:#c0c5ce;">,</span><span style="color:#d08770;">20 </span><span style="color:#c0c5ce;">@@ LetRec: Box&lt;ast::Expr&gt; = {
+ }
+
+
++NewRef: Box&lt;ast::Expr&gt; = {
++    Spanned&lt;(&quot;</span><span style="color:#b48ead;">ref</span><span style="color:#c0c5ce;">&quot; CaseExpr)&gt; =&gt; {
++        </span><span style="color:#b48ead;">let </span><span style="color:#c0c5ce;">((_, expr), span) = &lt;&gt;;
++        Box::new(ast::Expr::NewRef(expr, span))
++    }
++}
++RefGet: Box&lt;ast::Expr&gt; = {
++    &quot;</span><span style="color:#a3be8c;">!</span><span style="color:#c0c5ce;">&quot; &lt;Spanned&lt;RefExpr&gt;&gt; =&gt; Box::new(ast::Expr::RefGet(&lt;&gt;))
++}
++RefSet: Box&lt;ast::Expr&gt; = {
++    &lt;Spanned&lt;CallExpr&gt;&gt; &quot;</span><span style="color:#a3be8c;">:=</span><span style="color:#c0c5ce;">&quot; &lt;Expr&gt; =&gt; Box::new(ast::Expr::RefSet(&lt;&gt;))
++}
++
++
+ MultOpSub: (ast::OpType, ast::Op) = {
+     &quot;</span><span style="color:#a3be8c;">*</span><span style="color:#c0c5ce;">&quot; =&gt; (ast::OpType::IntOp, ast::Op::Mult),
+     &quot;</span><span style="color:#a3be8c;">/</span><span style="color:#c0c5ce;">&quot; =&gt; (ast::OpType::IntOp, ast::Op::Div),
+@@ -</span><span style="color:#d08770;">167</span><span style="color:#c0c5ce;">,</span><span style="color:#d08770;">9 </span><span style="color:#c0c5ce;">+</span><span style="color:#d08770;">181</span><span style="color:#c0c5ce;">,</span><span style="color:#d08770;">14 </span><span style="color:#c0c5ce;">@@ SimpleExpr = {
+     VarOrLiteral,
+     &quot;</span><span style="color:#a3be8c;">(</span><span style="color:#c0c5ce;">&quot; &lt;Expr&gt; &quot;</span><span style="color:#a3be8c;">)</span><span style="color:#c0c5ce;">&quot;,
+ }
+-CaseExpr = {
++RefExpr = {
+     SimpleExpr,
++    RefGet,
++}
++CaseExpr = {
++    RefExpr,
+     Case,
++    NewRef,
+ }
+ CallExpr = {
+     CaseExpr,
+@@ -</span><span style="color:#d08770;">194</span><span style="color:#c0c5ce;">,</span><span style="color:#d08770;">6 </span><span style="color:#c0c5ce;">+</span><span style="color:#d08770;">213</span><span style="color:#c0c5ce;">,</span><span style="color:#d08770;">8 </span><span style="color:#c0c5ce;">@@ Expr = {
+     Let,
+     LetRec,
+     Match,
++    RefSet,
+ }
+
+ TopLevelItem: ast::TopLevel = {
+</span></code></pre><h3 id="lei-xing-jie-dian">类型节点</h3>
+<p>现在到了最有趣的部分 - 为类型系统添加引用。这当然涉及到类型节点头枚举中的新变体。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">     VFunc { arg: Use, ret: Value },
+     VObj { fields: HashMap&lt;String, Value&gt; },
+     VCase { case: (String, Value) },
++    VRef { write: Option&lt;Use&gt;, read: Option&lt;Value&gt; },
+ }
+ #[</span><span style="color:#bf616a;">derive</span><span style="color:#c0c5ce;">(Debug, Clone)]
+ </span><span style="color:#b48ead;">enum </span><span style="color:#c0c5ce;">UTypeHead {
+@@ -</span><span style="color:#d08770;">31</span><span style="color:#c0c5ce;">,</span><span style="color:#d08770;">6 </span><span style="color:#c0c5ce;">+</span><span style="color:#d08770;">32</span><span style="color:#c0c5ce;">,</span><span style="color:#d08770;">7 </span><span style="color:#c0c5ce;">@@ </span><span style="color:#b48ead;">enum </span><span style="color:#c0c5ce;">UTypeHead {
+     UFunc { arg: Value, ret: Use },
+     UObj { field: (String, Use) },
+     UCase { cases: HashMap&lt;String, Use&gt; },
++    URef { write: Option&lt;Value&gt;, read: Option&lt;Use&gt; },
+ }
+</span></code></pre>
+<p>回顾一下，引用包含两个组件类型：一个协变类型，表示从引用中读取的值的类型，另一个是逆变类型，表示可写入该引用的值的类型。然而，在我们的语言中，引用的任何给定的使用要么是读，要么是写，而不是两者都是。因此，我们需要让用类型头参数成为可选的。这让我们可以用 <code>UTypeHead{write: None, read: Some(T)}</code> 表示对引用的读，而用 <code>UTypeHead{read: None, write: Some(T)}</code>表示对引用的写。</p>
+<p>至于<em>值</em>类型头，并没有特别需要把参数做成可选的，但为了保持一致性，我们在这里还是这样做了。这样还有一个好的副作用，就是让表示只读或只写的引用值变的可能了。我们的语言没有任何语法来实际创建这样的值，但如果你想把它们添加到自己的语言中，这仍然是一个有用的示范。</p>
+<p>在支持显式类型注释的语言中（简单起见，cubiml 中暂时省略了），只读和只写的引用类型特别有用。例如，你可以创建一个可变引用，然后在把它传递给其他代码之前，手动给它分配一个只读的引用类型，以静态地确保该代码不会修改你传递给它的引用。</p>
+<p>接下来，为 <code>check_heads</code> 实现添加引用。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">(&amp;VRef { read: r1, write: w1 }, &amp;URef { read: r2, write: w2 }) =&gt; {
+    </span><span style="color:#b48ead;">if let </span><span style="color:#c0c5ce;">Some(r2) = r2 {
+        </span><span style="color:#b48ead;">if let </span><span style="color:#c0c5ce;">Some(r1) = r1 {
+            out.</span><span style="color:#96b5b4;">push</span><span style="color:#c0c5ce;">((r1, r2));
+        } </span><span style="color:#b48ead;">else </span><span style="color:#c0c5ce;">{
+            </span><span style="color:#b48ead;">return </span><span style="color:#c0c5ce;">Err(TypeError::new2(
+                &quot;</span><span style="color:#a3be8c;">TypeError: Reference is not readable.</span><span style="color:#96b5b4;">\n</span><span style="color:#a3be8c;">Note: Ref is made write-only here</span><span style="color:#c0c5ce;">&quot;,
+                lhs.</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">,
+                &quot;</span><span style="color:#a3be8c;">But is read here.</span><span style="color:#c0c5ce;">&quot;,
+                rhs.</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">,
+            ));
+        }
+    }
+    </span><span style="color:#b48ead;">if let </span><span style="color:#c0c5ce;">Some(w2) = w2 {
+        </span><span style="color:#b48ead;">if let </span><span style="color:#c0c5ce;">Some(w1) = w1 {
+            </span><span style="color:#65737e;">// flip the order since writes are contravariant
+</span><span style="color:#c0c5ce;">            out.</span><span style="color:#96b5b4;">push</span><span style="color:#c0c5ce;">((w2, w1));
+        } </span><span style="color:#b48ead;">else </span><span style="color:#c0c5ce;">{
+            </span><span style="color:#b48ead;">return </span><span style="color:#c0c5ce;">Err(TypeError::new2(
+                &quot;</span><span style="color:#a3be8c;">TypeError: Reference is not writable.</span><span style="color:#96b5b4;">\n</span><span style="color:#a3be8c;">Note: Ref is made read-only here</span><span style="color:#c0c5ce;">&quot;,
+                lhs.</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">,
+                &quot;</span><span style="color:#a3be8c;">But is written here.</span><span style="color:#c0c5ce;">&quot;,
+                rhs.</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">,
+            ));
+        }
+    }
+    Ok(())
+}
+</span></code></pre>
+<p>如前所述，cubiml 没有任何创建只读或只写引用的语法，所以实际上无法到达这些检查。然而，为了说明起见，我还是把它们包含在这里。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">@@ -</span><span style="color:#d08770;">88</span><span style="color:#c0c5ce;">,</span><span style="color:#d08770;">6 </span><span style="color:#c0c5ce;">+</span><span style="color:#d08770;">118</span><span style="color:#c0c5ce;">,</span><span style="color:#d08770;">7 </span><span style="color:#c0c5ce;">@@ </span><span style="color:#b48ead;">fn </span><span style="color:#8fa1b3;">check_heads</span><span style="color:#c0c5ce;">(</span><span style="color:#bf616a;">lhs</span><span style="color:#c0c5ce;">: &amp;(</span><span style="color:#bf616a;">VTypeHead</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">Span</span><span style="color:#c0c5ce;">), </span><span style="color:#bf616a;">rhs</span><span style="color:#c0c5ce;">: &amp;(</span><span style="color:#bf616a;">UTypeHead</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">Span</span><span style="color:#c0c5ce;">), </span><span style="color:#bf616a;">out</span><span style="color:#c0c5ce;">: &amp;</span><span style="color:#b48ead;">mut </span><span style="color:#c0c5ce;">Vec&lt;(
+                 VFunc { .. } =&gt; &quot;function&quot;,
+                 VObj { .. } =&gt; &quot;record&quot;,
+                 VCase { .. } =&gt; &quot;case&quot;,
++                VRef { .. } =&gt; &quot;</span><span style="color:#b48ead;">ref</span><span style="color:#c0c5ce;">&quot;,
+             };
+             let expected = match rhs.0 {
+                 UBool =&gt; &quot;boolean&quot;,
+@@ -97,6 +128,7 @@ fn check_heads(lhs: &amp;(VTypeHead, Span), rhs: &amp;(UTypeHead, Span), out: &amp;</span><span style="color:#b48ead;">mut </span><span style="color:#c0c5ce;">Vec&lt;(
+                 UFunc { .. } =&gt; &quot;function&quot;,
+                 UObj { .. } =&gt; &quot;record&quot;,
+                 UCase { .. } =&gt; &quot;case&quot;,
++                URef { .. } =&gt; &quot;</span><span style="color:#b48ead;">ref</span><span style="color:#c0c5ce;">&quot;,
+             };
+
+             Err(</span><span style="color:#b48ead;">TypeError::</span><span style="color:#c0c5ce;">new2(
+</span></code></pre>
+<p>为了完成类型检测器核心中的实现，我们需要添加对匹配表达式对的引用，用于在生成错误信息时显示类型，并在公共接口中添加构造函数。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">reference</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">write</span><span style="color:#c0c5ce;">: Option&lt;Use&gt;, </span><span style="color:#bf616a;">read</span><span style="color:#c0c5ce;">: Option&lt;Value&gt;, </span><span style="color:#bf616a;">span</span><span style="color:#c0c5ce;">: Span) -&gt; Value {
+    </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">new_val</span><span style="color:#c0c5ce;">(VTypeHead::VRef { write, read }, span)
+}
+</span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">reference_use</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">write</span><span style="color:#c0c5ce;">: Option&lt;Value&gt;, </span><span style="color:#bf616a;">read</span><span style="color:#c0c5ce;">: Option&lt;Use&gt;, </span><span style="color:#bf616a;">span</span><span style="color:#c0c5ce;">: Span) -&gt; Use {
+    </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">new_use</span><span style="color:#c0c5ce;">(UTypeHead::URef { write, read }, span)
+}
+</span></code></pre><h3 id="qian-duan">前端</h3>
+<p>最后，我们需要在类型检查器前端中添加支持。(我们还必须在代码生成和演示 UI 中添加支持，但和以往一样，我在这里不涉及这些内容)。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">NewRef(expr, span) =&gt; {
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> expr_type = </span><span style="color:#96b5b4;">check_expr</span><span style="color:#c0c5ce;">(engine, bindings, expr)?;
+    </span><span style="color:#b48ead;">let </span><span style="color:#c0c5ce;">(read, write) = engine.</span><span style="color:#96b5b4;">var</span><span style="color:#c0c5ce;">();
+    engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(expr_type, write)?;
+    Ok(engine.</span><span style="color:#96b5b4;">reference</span><span style="color:#c0c5ce;">(Some(write), Some(read), *span))
+}
+</span></code></pre>
+<p>如果你到目前为止一直在关注的话，前台的实现应该是非常简单的。像往常一样，首先对子表达式进行类型检查，然后创建相关的用类型并为其添加流约束。</p>
+<p>唯一棘手的部分是在 <code>NewRef</code> 中，我们创建变量，将变量的两个“端”作为引用的两个类型参数，如前所述。就其它而言，<code>RefGet</code> 和 <code>FieldAccess</code> 差不多，只是用引用用类型代替了记录用类型，而 <code>RefSet</code> 则和函数调用的处理有点类似。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">RefGet((expr, span)) =&gt; {
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> expr_type = </span><span style="color:#96b5b4;">check_expr</span><span style="color:#c0c5ce;">(engine, bindings, expr)?;
+
+    </span><span style="color:#b48ead;">let </span><span style="color:#c0c5ce;">(cell_type, cell_bound) = engine.</span><span style="color:#96b5b4;">var</span><span style="color:#c0c5ce;">();
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> bound = engine.</span><span style="color:#96b5b4;">reference_use</span><span style="color:#c0c5ce;">(None, Some(cell_bound), *span);
+    engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(expr_type, bound)?;
+    Ok(cell_type)
+}
+RefSet((lhs_expr, lhs_span), rhs_expr) =&gt; {
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> lhs_type = </span><span style="color:#96b5b4;">check_expr</span><span style="color:#c0c5ce;">(engine, bindings, lhs_expr)?;
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> rhs_type = </span><span style="color:#96b5b4;">check_expr</span><span style="color:#c0c5ce;">(engine, bindings, rhs_expr)?;
+
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> bound = engine.</span><span style="color:#96b5b4;">reference_use</span><span style="color:#c0c5ce;">(Some(rhs_type), None, *lhs_span);
+    engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(lhs_type, bound)?;
+    Ok(rhs_type)
+}
+</span></code></pre>
+<p>本周的内容就到这里。<a href="/blog/subtype-inference-by-example-part-9-nonexhaustive-matching-record-extensions-and-row-polymorphism/">下周</a>，我们将介绍如何添加不完全的 case 匹配和记录扩展到类型系统中（以及扩展到语言）。</p>
+
+    </div>
+
+
+</article>
+
+
+        </main>
+        <footer>
+            <p>
+                © 2021 firecodelab.com
+            </p>
+            <p>
+                
+                
+            </p>
+        </footer>
+    </div>
+</body>
+</html>

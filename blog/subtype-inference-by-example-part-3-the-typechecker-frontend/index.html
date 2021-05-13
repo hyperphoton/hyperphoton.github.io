@@ -1,0 +1,521 @@
+<!DOCTYPE html>
+<html lang="zh-cn">
+<head>
+    <meta charset="utf-8">
+    <meta name="HandheldFriendly" content="True">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="referrer" content="no-referrer-when-downgrade">
+
+    <title>[译]通过例子学子类型推理（三）：类型检查器前端</title>
+    <meta name="description" content="">
+
+    <link rel="stylesheet" href="https:&#x2F;&#x2F;firecodelab.com&#x2F;main.css">
+
+    
+
+    
+    
+</head>
+<body>
+    <a class="skip-main" href="#main">Skip to content</a>
+    <div class="container">
+        <header>
+            <h1 class="site-header">
+                <a href="https:&#x2F;&#x2F;firecodelab.com">Fire Code</a>
+            </h1>
+            <nav>
+                
+                
+                
+                <a  href="&#x2F;blog&#x2F;">博客</a>
+                
+                
+                <a  href="&#x2F;about&#x2F;">关于</a>
+                
+                
+            </nav>
+        </header>
+        <main id="main" tabindex="-1">
+            
+
+<article class="post">
+    <header>
+        <h1>[译]通过例子学子类型推理（三）：类型检查器前端</h1>
+    </header>
+
+    
+    <div class="article-info">
+        
+        <div class="article-date">2021-04-03</div>
+        
+        <div class="article-taxonomies">
+            
+                <ul class="article-tags">
+                    
+                    <li><a href="https://firecodelab.com/tags/translate/">#translate</a></li>
+                    
+                    <li><a href="https://firecodelab.com/tags/compiler/">#compiler</a></li>
+                    
+                    <li><a href="https://firecodelab.com/tags/type-inference/">#type inference</a></li>
+                    
+                </ul>
+            
+        </div>
+        
+        <div class="article-original">[<a href="https:&#x2F;&#x2F;blog.polybdenum.com&#x2F;2020&#x2F;07&#x2F;18&#x2F;subtype-inference-by-example-part-3-the-typechecker-frontend.html" target="_blank">view original</a>]</div>
+        
+    </div>
+
+
+    <div class="content">
+        <p><a href="/blog/subtype-inference-by-example-part-2-parsing-and-biunification">上周</a>，我们介绍了 cubiml 类型检查器前端背后的高级理论，也就是类型检查器负责将抽象语法树翻译成双合一类型和约束的部分。今天我们就来介绍一下前端的实际实现。</p>
+<h3 id="cuo-wu-chu-li">错误处理</h3>
+<p>上一次，我们看到类型检查器核心如果检测到程序中的错误，会返回一个 <code>TypeError</code>。然而，在某些情况下，编译器需要返回一个与类型无关的错误，例如对未定义变量的引用。你可能想在一个不同的过程中处理这些情况，但是为了保持 cubiml 初始版本的简单性，我们将在类型检查器前端一个单独的过程中处理这些情况。因此，我们首先为语法错误定义一个新的错误类型。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">#[</span><span style="color:#bf616a;">derive</span><span style="color:#c0c5ce;">(Debug)]
+</span><span style="color:#b48ead;">pub struct </span><span style="color:#c0c5ce;">SyntaxError(String);
+</span><span style="color:#b48ead;">impl </span><span style="color:#c0c5ce;">fmt::Display </span><span style="color:#b48ead;">for </span><span style="color:#c0c5ce;">SyntaxError {
+    </span><span style="color:#b48ead;">fn </span><span style="color:#8fa1b3;">fmt</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">f</span><span style="color:#c0c5ce;">: &amp;</span><span style="color:#b48ead;">mut </span><span style="color:#c0c5ce;">fmt::Formatter) -&gt; fmt::Result {
+        f.</span><span style="color:#96b5b4;">write_str</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">)
+    }
+}
+</span><span style="color:#b48ead;">impl </span><span style="color:#c0c5ce;">error::Error </span><span style="color:#b48ead;">for </span><span style="color:#c0c5ce;">SyntaxError {}
+</span></code></pre>
+<p>不幸的是，Rust 中的错误类型需要相当多的模板，但你几乎可以忽略所有这些代码。它所做的只是定义了一个新的错误类型，名为 <code>SyntaxError</code>，它接收并打印字符串错误信息。</p>
+<blockquote>
+<p><strong>更新:</strong> 一个有帮助的读者叫我注意 <a href="https://github.com/dtolnay/thiserror">thiserror 库</a>，它大大减少了定义这种基本错误类型所需的模板。还有一个库，<a href="https://github.com/dtolnay/anyhow">anyhow</a>，它提供了一个我们下面定义的 <code>Result&lt;T, Box&lt;dyn error::Error&gt;&gt;</code> 的等价预定义。</p>
+</blockquote>
+<p>前端既可以返回 <code>SyntaxError</code>，也可以返回 <code>TypeError</code>，所以我们需要一个包括这两种类型的返回类型。简单起见，我们使用 <code>Box&lt;dyn error::Error&gt;</code>，它只是一个虚拟指针，指向实现错误接口的任何对象，就像你在 Java、Go 等中做的那样。在 Rust 中组合多个错误类型的“正确”方法是通过定义一个包含每个错误类型成员的枚举（sum 类型），但这样做需要大量的模板。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#b48ead;">type </span><span style="color:#c0c5ce;">Result&lt;T&gt; = std::result::Result&lt;T, Box&lt;dyn error::Error&gt;&gt;;
+</span></code></pre>
+<p><code>Result&lt;T, E&gt;</code> 是 Rust 中用于成功时返回 <code>T</code> 或失败时返回错误 <code>E</code> 的函数的类型。由于将在整个文件中使用 <code>Box&lt;dyn error::Error&gt;</code> 作为错误类型，我们定义了一个类型别名，因此可以只说 <code>Result&lt;T&gt;</code> 而不是到处说 <code>Result&lt;T, Box&lt;dyn error::Error&gt;</code>。</p>
+<h3 id="bang-ding">绑定</h3>
+<p>接下来，当遍历抽象语法树时，有一个类来跟踪当前作用域中可见变量绑定的推断类型。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#b48ead;">struct </span><span style="color:#c0c5ce;">Bindings {
+    </span><span style="color:#bf616a;">m</span><span style="color:#c0c5ce;">: HashMap&lt;String, Value&gt;,
+}
+</span><span style="color:#b48ead;">impl </span><span style="color:#c0c5ce;">Bindings {
+    </span><span style="color:#b48ead;">fn </span><span style="color:#8fa1b3;">new</span><span style="color:#c0c5ce;">() -&gt; </span><span style="color:#b48ead;">Self </span><span style="color:#c0c5ce;">{
+        </span><span style="color:#b48ead;">Self </span><span style="color:#c0c5ce;">{ m: HashMap::new() }
+    }
+
+    </span><span style="color:#b48ead;">fn </span><span style="color:#8fa1b3;">get</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">k</span><span style="color:#c0c5ce;">: &amp;</span><span style="color:#b48ead;">str</span><span style="color:#c0c5ce;">) -&gt; Option&lt;Value&gt; {
+        </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.m.</span><span style="color:#96b5b4;">get</span><span style="color:#c0c5ce;">(k).</span><span style="color:#96b5b4;">copied</span><span style="color:#c0c5ce;">()
+    }
+
+    </span><span style="color:#b48ead;">fn </span><span style="color:#8fa1b3;">insert</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">k</span><span style="color:#c0c5ce;">: String, </span><span style="color:#bf616a;">v</span><span style="color:#c0c5ce;">: Value) {
+        </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.m.</span><span style="color:#96b5b4;">insert</span><span style="color:#c0c5ce;">(k.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">(), v);
+    }
+}
+</span></code></pre>
+<p>回顾一下，<code>Value </code>是核心中定义的类型，用来表示程序表达式类型的 cubiml 类型节点。因此 <code>HashMap&lt;String, Value&gt;</code> 只是一个哈希表，它将一个类型（<code>Value</code>）关联到每个变量名（<code>String</code>）。我们的 <code>Bindings</code> 类封装了这个哈希表，并提供了 <code>get</code> 和 <code>insert</code> 方法分别用于查找变量和设置新的变量绑定。这个包装器现在看起来可能毫无意义，但以后会证明它是有用的。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#b48ead;">impl </span><span style="color:#c0c5ce;">Bindings {
+    </span><span style="color:#b48ead;">fn </span><span style="color:#8fa1b3;">in_child_scope</span><span style="color:#c0c5ce;">&lt;T&gt;(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">cb</span><span style="color:#c0c5ce;">: impl FnOnce(&amp;</span><span style="color:#bf616a;">mut Self</span><span style="color:#c0c5ce;">) -&gt; T) -&gt; T {
+        </span><span style="color:#b48ead;">let mut</span><span style="color:#c0c5ce;"> child_scope = Bindings { m: </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.m.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">() };
+        </span><span style="color:#96b5b4;">cb</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut</span><span style="color:#c0c5ce;"> child_scope)
+    }
+}
+</span></code></pre>
+<p>有个方法值得特别一提：<code>in_child_scope</code>。它用于处理下降到一个新作用域，这个新作用域是当前作用域的子作用域，并将一个在子作用域中执行的回调作为参数。在子作用域中，父作用域的所有绑定都是可见的，除非在子作用域中被遮蔽，但是在子作用域中定义的绑定在父作用域中是不可见的。因此，我们需要复制内部的哈希映射以防止变化影响父作用域。现在，只需要创建一个带有当前哈希映射副本的临时的新 <code>Bindings</code> 实例，将其传递给回调，然后返回调用回调的结果。</p>
+<h3 id="biao-da-shi-jian-cha">表达式检查</h3>
+<p>助手类说完了，现在是前端的主要功能 <code>check_expr</code> 的时候了。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#b48ead;">fn </span><span style="color:#8fa1b3;">check_expr</span><span style="color:#c0c5ce;">(</span><span style="color:#bf616a;">engine</span><span style="color:#c0c5ce;">: &amp;</span><span style="color:#b48ead;">mut</span><span style="color:#c0c5ce;"> TypeCheckerCore, </span><span style="color:#bf616a;">bindings</span><span style="color:#c0c5ce;">: &amp;</span><span style="color:#b48ead;">mut</span><span style="color:#c0c5ce;"> Bindings, </span><span style="color:#bf616a;">expr</span><span style="color:#c0c5ce;">: &amp;ast::Expr) -&gt; Result&lt;Value&gt; {
+    </span><span style="color:#b48ead;">use </span><span style="color:#c0c5ce;">ast::Expr::*;
+    </span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> expr {
+</span></code></pre>
+<p>这个函数接收类型检查器核心的实例、上面定义的绑定类和要处理的 AST 表达式节点，并返回表达式的推断类型（如果适用，则返回语法或类型错误）。我们首先对 <code>expr</code> 进行匹配。回想一下，<code>ast::Expr</code> 是个枚举，具有语言语法中每种表达式的成员（函数定义、函数调用、记录、字段访问、let 绑定等），所以我们需要提供代码来处理每一个成员，并推断该种表达式的类型。</p>
+<p>回忆一下，<code>TypeCheckerCore</code> 有如下接口。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#b48ead;">impl </span><span style="color:#c0c5ce;">TypeCheckerCore {
+    </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">var</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">) -&gt; (Value, Use);
+
+    </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">bool</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">) -&gt; Value;
+    </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">bool_use</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">) -&gt; Use;
+
+    </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">func</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">arg</span><span style="color:#c0c5ce;">: Use, </span><span style="color:#bf616a;">ret</span><span style="color:#c0c5ce;">: Value) -&gt; Value;
+    </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">func_use</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">arg</span><span style="color:#c0c5ce;">: Value, </span><span style="color:#bf616a;">ret</span><span style="color:#c0c5ce;">: Use) -&gt; Use;
+
+    </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">obj</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">fields</span><span style="color:#c0c5ce;">: Vec&lt;(String, Value)&gt;) -&gt; Value;
+    </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">obj_use</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">field</span><span style="color:#c0c5ce;">: (</span><span style="color:#bf616a;">String</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">Use</span><span style="color:#c0c5ce;">)) -&gt; Use;
+
+    </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">case</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">case</span><span style="color:#c0c5ce;">: (</span><span style="color:#bf616a;">String</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">Value</span><span style="color:#c0c5ce;">)) -&gt; Value;
+    </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">case_use</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">cases</span><span style="color:#c0c5ce;">: Vec&lt;(String, Use)&gt;) -&gt; Use;
+
+    </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">flow</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">lhs</span><span style="color:#c0c5ce;">: Value, </span><span style="color:#bf616a;">rhs</span><span style="color:#c0c5ce;">: Use) -&gt; Result&lt;(), TypeError&gt;;
+}
+</span></code></pre>
+<p>核心的大部分方法都是用来构造类型的。对于每一种类型，布尔、函数、记录（这里对象称为 <code>obj</code>）和 case 型，都有一对相应的构造方法来创建该类型的值型和用型。<code>var</code> 方法创建了一个<em>类型变量</em>，用于表示程序流的中间状态。最后是 <code>flow</code> 方法，它在刚才构造的类型节点之间创建子类型约束。<code>flow</code> 接收<em>值类型</em>和<em>用类型</em>，表示该值<em>跟随</em>用的约束，因此必须与该用法兼容。如果传递的类型不兼容，它将返回类型错误，成功后不返回任何内容。</p>
+<p>我们先从最简单的 <code>check_expr</code> case 开始 - 变量和字面量。</p>
+<h4 id="bian-liang-he-zi-mian-liang">变量和字面量</h4>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">Literal(val) =&gt; {
+    </span><span style="color:#b48ead;">use </span><span style="color:#c0c5ce;">ast::Literal::*;
+    Ok(</span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> val {
+        Bool(_) =&gt; engine.</span><span style="color:#b48ead;">bool</span><span style="color:#c0c5ce;">(),
+    })
+}
+Variable(name) =&gt; bindings
+    .</span><span style="color:#96b5b4;">get</span><span style="color:#c0c5ce;">(name.</span><span style="color:#96b5b4;">as_str</span><span style="color:#c0c5ce;">())
+    .</span><span style="color:#96b5b4;">ok_or_else</span><span style="color:#c0c5ce;">(|| SyntaxError(format!(&quot;</span><span style="color:#a3be8c;">Undefined variable </span><span style="color:#d08770;">{}</span><span style="color:#c0c5ce;">&quot;, name)).</span><span style="color:#96b5b4;">into</span><span style="color:#c0c5ce;">()),
+</span></code></pre>
+<p>字面量 case 只匹配字面量的种类，并返回相应的类型。目前只有一种类型的字面量 - 布尔。为了创建布尔值类型，我们在类型检查器核心实例上调用 <code>bool</code> 方法，这里以变量 <code>engine</code> 的形式传递，以避免与定义了类 <code>TypeCheckerCore</code> 的<em>模块</em> <code>core</code> 混淆。</p>
+<p>变量 case 只在当前作用域的绑定中查找变量名称，并返回相关的类型，如果该名称在当前可见的绑定中没有定义，则返回“未定义变量”语法错误。</p>
+<h4 id="ji-lu-he-case-zi-mian-liang">记录和 case 字面量</h4>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">Record(fields) =&gt; {
+    </span><span style="color:#b48ead;">let mut</span><span style="color:#c0c5ce;"> field_names = HashSet::with_capacity(fields.</span><span style="color:#96b5b4;">len</span><span style="color:#c0c5ce;">());
+    </span><span style="color:#b48ead;">let mut</span><span style="color:#c0c5ce;"> field_type_pairs = Vec::with_capacity(fields.</span><span style="color:#96b5b4;">len</span><span style="color:#c0c5ce;">());
+    </span><span style="color:#b48ead;">for </span><span style="color:#c0c5ce;">(name, expr) in fields {
+        </span><span style="color:#b48ead;">if </span><span style="color:#c0c5ce;">!field_names.</span><span style="color:#96b5b4;">insert</span><span style="color:#c0c5ce;">(&amp;*name) {
+            </span><span style="color:#b48ead;">return </span><span style="color:#c0c5ce;">Err(SyntaxError(format!(&quot;</span><span style="color:#a3be8c;">Repeated field name </span><span style="color:#d08770;">{}</span><span style="color:#c0c5ce;">&quot;, name)).</span><span style="color:#96b5b4;">into</span><span style="color:#c0c5ce;">());
+        }
+
+        </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> t = </span><span style="color:#96b5b4;">check_expr</span><span style="color:#c0c5ce;">(engine, bindings, expr)?;
+        field_type_pairs.</span><span style="color:#96b5b4;">push</span><span style="color:#c0c5ce;">((name.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">(), t));
+    }
+    Ok(engine.</span><span style="color:#96b5b4;">obj</span><span style="color:#c0c5ce;">(field_type_pairs))
+}
+Case(tag, val_expr) =&gt; {
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> val_type = </span><span style="color:#96b5b4;">check_expr</span><span style="color:#c0c5ce;">(engine, bindings, val_expr)?;
+    Ok(engine.</span><span style="color:#96b5b4;">case</span><span style="color:#c0c5ce;">((tag.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">(), val_type)))
+}
+</span></code></pre>
+<p>记录字面量表达式定义了一个新的对象，将任何数量的子表达式包装成字段。AST 中的每个记录节点都包含一个 <code>Vec</code>（列表），其中包含（name，expr）对，为其每个字段指定了名称和表达式节点。同样，为了创建记录值类型，需要收集（名称，值类型）对的列表来传递给记录类型构造器方法。</p>
+<p>记录 case 的逻辑很简单：对于每个字段，调用子表达式的 <code>check_expr</code> 来获取它的类型，然后将得到的（名称，类型）对列表传给 <code>engine.obj()</code> 来创建一个记录类型并返回。我们还维护了一组以前见过的字段名，所以可以检测某个字段名是否重复，并在这种情况下返回语法错误。</p>
+<p>case 字面量的逻辑非常相似，不同之处在于它甚至更简单，因为 case 字面量表达式仅包装单个表达式。</p>
+<h4 id="if-biao-da-shi">If 表达式</h4>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">If(cond_expr, then_expr, else_expr) =&gt; {
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> cond_type = </span><span style="color:#96b5b4;">check_expr</span><span style="color:#c0c5ce;">(engine, bindings, cond_expr)?;
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> bound = engine.</span><span style="color:#96b5b4;">bool_use</span><span style="color:#c0c5ce;">();
+    engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(cond_type, bound)?;
+
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> then_type = </span><span style="color:#96b5b4;">check_expr</span><span style="color:#c0c5ce;">(engine, bindings, then_expr)?;
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> else_type = </span><span style="color:#96b5b4;">check_expr</span><span style="color:#c0c5ce;">(engine, bindings, else_expr)?;
+
+    </span><span style="color:#b48ead;">let </span><span style="color:#c0c5ce;">(merged, merged_bound) = engine.</span><span style="color:#96b5b4;">var</span><span style="color:#c0c5ce;">();
+    engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(then_type, merged_bound)?;
+    engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(else_type, merged_bound)?;
+    Ok(merged)
+}
+</span></code></pre>
+<p>if 表达式节点有三个子表达式：条件、then 分支和 else 分支。首先，我们要求条件必须是布尔类型。要做到这一点，我们首先像之前一样对子表达式调用 <code>check_expr</code> 来获取它的类型。然后调用 <code>engine.bool_use()</code> 来创建一个布尔<em>用类型</em>，再调用 <code>engine.flow()</code> 表示条件的类型<em>跟随</em>布尔用法。</p>
+<p>假设这样就可以了，现在来处理分支。在运行时，if 表达式会求值到其中一个分支子表达式的值，但并不确定是哪个。因此，从某种意义上说，if 表达式的类型可能是其<em>任何</em>分支子表达式的类型。然而，我们只能推断出每个表达式的单一类型，所以需要一种方法来合并或联合子表达式的类型。</p>
+<p>在双合一中，联合值类型不是显式表示的。相反，它们隐含在流图中。为了做到这一点，我们使用 <code>engine.var()</code> 创建一个中间的<em>类型变量</em>节点，添加从每个子表达式的类型到变量的流边缘，然后将变量作为整个 if 表达式的类型返回。由于流转关系是可传递的，所以 if 表达式类型流向的任何用法也会有每个子表达式的类型流向它，从而保证了所需的约束。</p>
+<h4 id="zi-duan-fang-wen">字段访问</h4>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">FieldAccess(lhs_expr, name) =&gt; {
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> lhs_type = </span><span style="color:#96b5b4;">check_expr</span><span style="color:#c0c5ce;">(engine, bindings, lhs_expr)?;
+
+    </span><span style="color:#b48ead;">let </span><span style="color:#c0c5ce;">(field_type, field_bound) = engine.</span><span style="color:#96b5b4;">var</span><span style="color:#c0c5ce;">();
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> bound = engine.</span><span style="color:#96b5b4;">obj_use</span><span style="color:#c0c5ce;">((name.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">(), field_bound));
+    engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(lhs_type, bound)?;
+    Ok(field_type)
+}
+</span></code></pre>
+<p>字段访问逻辑是前面所有情况的一点组合。当你使用 <code>a.foo</code> 时，那就是 <code>a </code>的<em>记录用法</em>。与布尔用法不同，但就像记录值类型一样，记录用类型有一个子类型，特别是，子类型是一个（字段名、用类型）对。</p>
+<p>棘手的是提供哪种类型给构造器作为字段的用类型。实际上，我们在这里使用了一个临时变量。回想一下，一个变量由两半组成，即用和值。假设新变量具有值 <code>v</code> 和用 <code>u</code>，我们正在处理表达式 <code>a.foo</code>，其中子表达式 <code>a</code> 具有类型 <code>t</code>。</p>
+<p>我们将列表 <code>[(&quot;foo&quot;，u)]</code> 传递给记录用法构造器方法 <code>engine.obj_use()</code>，创建记录用类型 <code>{foo=u}</code>。然后创建从 <code>t</code> 到 <code>{foo=u}</code> 的流约束，返回 <code>v</code> 作为整个表达式 <code>a.foo</code> 的类型。因此，如果 <code>a.foo</code> 的类型 <code>v</code> 跟随某个用法 <code>u'</code>，则 <code>u'</code> 所代表的约束将从 <code>v</code> 向后传播到 <code>u</code>，然后再传播到 <code>t</code> 的任何 <code>foo</code> 字段。</p>
+<p>关于结构类型的子组件的额外流边是如何被添加的，具体的机制将在后面实现类型检查器核心的时候介绍。现在，只要知道每当记录值类型 <code>{foo=v}</code> 跟随记录用类型 <code>{foo=u}</code> 时，类型检查器就会插入一个从 <code>v</code> 到 <code>u</code> 的流边，对于函数和 case 类型的子组件也是如此。</p>
+<h4 id="pi-pei-biao-da-shi">匹配表达式</h4>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">Match(match_expr, cases) =&gt; {
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> match_type = </span><span style="color:#96b5b4;">check_expr</span><span style="color:#c0c5ce;">(engine, bindings, match_expr)?;
+    </span><span style="color:#b48ead;">let </span><span style="color:#c0c5ce;">(result_type, result_bound) = engine.</span><span style="color:#96b5b4;">var</span><span style="color:#c0c5ce;">();
+
+    </span><span style="color:#b48ead;">let mut</span><span style="color:#c0c5ce;"> case_names = HashSet::with_capacity(cases.</span><span style="color:#96b5b4;">len</span><span style="color:#c0c5ce;">());
+    </span><span style="color:#b48ead;">let mut</span><span style="color:#c0c5ce;"> case_type_pairs = Vec::with_capacity(cases.</span><span style="color:#96b5b4;">len</span><span style="color:#c0c5ce;">());
+    </span><span style="color:#b48ead;">for </span><span style="color:#c0c5ce;">((tag, name), rhs_expr) in cases {
+        </span><span style="color:#b48ead;">if </span><span style="color:#c0c5ce;">!case_names.</span><span style="color:#96b5b4;">insert</span><span style="color:#c0c5ce;">(&amp;*name) {
+            </span><span style="color:#b48ead;">return </span><span style="color:#c0c5ce;">Err(SyntaxError(format!(&quot;</span><span style="color:#a3be8c;">Repeated match case </span><span style="color:#d08770;">{}</span><span style="color:#c0c5ce;">&quot;, name)).</span><span style="color:#96b5b4;">into</span><span style="color:#c0c5ce;">());
+        }
+
+        </span><span style="color:#b48ead;">let </span><span style="color:#c0c5ce;">(wrapped_type, wrapped_bound) = engine.</span><span style="color:#96b5b4;">var</span><span style="color:#c0c5ce;">();
+        case_type_pairs.</span><span style="color:#96b5b4;">push</span><span style="color:#c0c5ce;">((tag.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">(), wrapped_bound));
+
+        </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> rhs_type = bindings.</span><span style="color:#96b5b4;">in_child_scope</span><span style="color:#c0c5ce;">(|</span><span style="color:#bf616a;">bindings</span><span style="color:#c0c5ce;">| {
+            bindings.</span><span style="color:#96b5b4;">insert</span><span style="color:#c0c5ce;">(name.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">(), wrapped_type);
+            </span><span style="color:#96b5b4;">check_expr</span><span style="color:#c0c5ce;">(engine, bindings, rhs_expr)
+        })?;
+        engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(rhs_type, result_bound)?;
+    }
+
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> bound = engine.</span><span style="color:#96b5b4;">case_use</span><span style="color:#c0c5ce;">(case_type_pairs);
+    engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(match_type, bound)?;
+
+    Ok(result_type)
+}
+</span></code></pre>
+<p>这可能看起来很吓人，但实际上它与之前的情况很相似。主要区别是，我们现在还必须处理变量绑定和作用域。</p>
+<p>回想一下，匹配表达式的样子是这样的：</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#b48ead;">let </span><span style="color:#bf616a;">calculate_area </span><span style="color:#c0c5ce;">= fun shape -&gt;
+    </span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> shape </span><span style="color:#b48ead;">with
+          </span><span style="color:#c0c5ce;">`Circle </span><span style="color:#bf616a;">circle_val </span><span style="color:#c0c5ce;">-&gt; circle_val.rad *. circle_val.rad *. </span><span style="color:#d08770;">3.1415926
+        </span><span style="color:#b48ead;">| </span><span style="color:#c0c5ce;">`Rectangle </span><span style="color:#bf616a;">rect_val </span><span style="color:#c0c5ce;">-&gt; rect_val.length *. rect_val.height
+
+calculate_area `Circle {rad=</span><span style="color:#d08770;">6.7</span><span style="color:#c0c5ce;">}
+calculate_area `Rectangle {height=</span><span style="color:#d08770;">1.1</span><span style="color:#c0c5ce;">; length=</span><span style="color:#d08770;">2.2</span><span style="color:#c0c5ce;">}
+</span></code></pre>
+<p>这个匹配表达式有两个分支，分别用于 <code>Circle</code> 和 <code>Rectangle</code> 的情况。匹配表达式的每个分支由标签、变量名、<code>-&gt;</code> 和<em>主体</em>组成。主题是一个表达式，包含了当选择该匹配分支时将执行的代码，而该表达式的值就是匹配表达式整体在该情况下将求得的值。</p>
+<p>最关键的是，在匹配分支的主体内，可以使用一个新的变量绑定，其名称是在分支的左侧给出的，其值等于原 case 对象所封装的值。例如，当我们调用 <code>calculate_area `Circle {rad=6.7}</code> 时，匹配表达式的 <code>Circle</code> 分支将被选择。这样就会在变量 <code>circle_val</code> 的值为 <code>{rad=6.7}</code> 的特殊作用域中执行表达式 <code>circle_val.rad *. circle_val.rad *. 3.1415926</code>。同样的，选择 <code>Rectangle</code> 分支会在包含变量 <code>rect_val</code> 的作用域中执行该分支的主体，以此类推。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> rhs_type = bindings.</span><span style="color:#96b5b4;">in_child_scope</span><span style="color:#c0c5ce;">(|</span><span style="color:#bf616a;">bindings</span><span style="color:#c0c5ce;">| {
+    bindings.</span><span style="color:#96b5b4;">insert</span><span style="color:#c0c5ce;">(name.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">(), wrapped_type);
+    </span><span style="color:#96b5b4;">check_expr</span><span style="color:#c0c5ce;">(engine, bindings, rhs_expr)
+})?;
+</span></code></pre>
+<p>为了实现变量作用域，我们使用 <code>Binding</code> 的 <code>in_child_scope</code> 方法，如前所述。因此，上面的代码调用了 <code>in_child_scope</code>，传递了在该作用域中执行的回调（上面缩进块中的所有内容）。在该作用域中，首先插入新的绑定，名称为 <code>name</code>，类型为 <code>wrapped_type</code>。由于 <code>bindings.insert</code> 的调用发生在回调的主体中，所以它看到了包含原始绑定映射副本的子作用域 <code>Bindings</code> 对象。由于插入是在绑定的副本上进行的，所以调用 <code>in_child_scope</code> 完成后，变化就会消失，不会影响父作用域中的绑定。</p>
+<p>最后，回调在代表该匹配分支主体的表达式上递归调用 <code>check_expr</code> 并返回结果。结果被 <code>bindings.in_child_scope()</code> 本身返回，而产生的值类型被分配给变量 <code>rhs_type</code>。</p>
+<p>除了作用域技巧外，<code>Match</code> 处理器的代码和前面的情况类似，但还是有点复杂，所以我再一步一步地讲一遍。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> match_type = </span><span style="color:#96b5b4;">check_expr</span><span style="color:#c0c5ce;">(engine, bindings, match_expr)?;
+</span></code></pre>
+<p>首先，我们得到输入到匹配表达式的子表达式的类型。这是运行时将被匹配的值，它的类型将跟随将在这里构建的巨大的 case 用类型。在下面的匹配示例中，子表达式将是 <code>shape</code> 变量。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> shape </span><span style="color:#b48ead;">with
+      </span><span style="color:#c0c5ce;">`Circle </span><span style="color:#bf616a;">circle_val </span><span style="color:#c0c5ce;">-&gt; circle_val.rad *. circle_val.rad *. </span><span style="color:#d08770;">3.1415926
+    </span><span style="color:#b48ead;">| </span><span style="color:#c0c5ce;">`Rectangle </span><span style="color:#bf616a;">rect_val </span><span style="color:#c0c5ce;">-&gt; rect_val.length *. rect_val.height
+</span></code></pre><pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#b48ead;">let </span><span style="color:#c0c5ce;">(result_type, result_bound) = engine.</span><span style="color:#96b5b4;">var</span><span style="color:#c0c5ce;">();
+</span></code></pre>
+<p>接下来我们为匹配表达式的结果创建一个临时变量。<code>result_type</code> 将是整个匹配表达式的类型，而 <code>result_bound</code> 将是每个匹配分支的每个主题类型将跟随的用法。基本上，我们要取每个匹配分支类型的联合，就像前面的 if 表达式例子一样。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#b48ead;">let mut</span><span style="color:#c0c5ce;"> case_names = HashSet::with_capacity(cases.</span><span style="color:#96b5b4;">len</span><span style="color:#c0c5ce;">());
+</span><span style="color:#b48ead;">let mut</span><span style="color:#c0c5ce;"> case_type_pairs = Vec::with_capacity(cases.</span><span style="color:#96b5b4;">len</span><span style="color:#c0c5ce;">());
+</span><span style="color:#b48ead;">for </span><span style="color:#c0c5ce;">((tag, name), rhs_expr) in cases {
+    </span><span style="color:#b48ead;">if </span><span style="color:#c0c5ce;">!case_names.</span><span style="color:#96b5b4;">insert</span><span style="color:#c0c5ce;">(&amp;*name) {
+        </span><span style="color:#b48ead;">return </span><span style="color:#c0c5ce;">Err(SyntaxError(format!(&quot;</span><span style="color:#a3be8c;">Repeated match case </span><span style="color:#d08770;">{}</span><span style="color:#c0c5ce;">&quot;, name)).</span><span style="color:#96b5b4;">into</span><span style="color:#c0c5ce;">());
+    }
+</span></code></pre>
+<p>与前面的记录和 case 示例一样，核心的 <code>case_usage</code> 构造器方法接收了一个 <code>(tag, usage)</code> 对的列表。<code>case_type_pairs</code> 是将要创建的这些对的列表，而 <code>case_names</code> 是一个额外的集合，用于跟踪我们已经看到的标记，以便可以在匹配表达式中标记名称重复的情况下返回语法错误，就像之前处理记录字面量中重复字段名时一样。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#b48ead;">let </span><span style="color:#c0c5ce;">(wrapped_type, wrapped_bound) = engine.</span><span style="color:#96b5b4;">var</span><span style="color:#c0c5ce;">();
+case_type_pairs.</span><span style="color:#96b5b4;">push</span><span style="color:#c0c5ce;">((tag.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">(), wrapped_bound));
+</span></code></pre>
+<p>对于每个分支，我们都会创建另一个临时变量 <code>(wrapped_type，wrapped_bound)</code>。<code>wrapped_bound</code> 是添加到 <code>(tag, usage)</code> 对列表中的用，这些用将被传递给大的 <code>case_usage</code> 构造器，而 <code>wrapped_type</code> 则是相应的值类型，它代表了匹配分支主体进行类型检查时输入的包装值的类型。这与 <code>a.foo</code> 的例子类似，只是我们为每个匹配分支单独设置了一个变量，并且由此产生的值类型被传递给匹配分支的主体，而不是作为整个表达式的类型直接返回。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> rhs_type = bindings.</span><span style="color:#96b5b4;">in_child_scope</span><span style="color:#c0c5ce;">(|</span><span style="color:#bf616a;">bindings</span><span style="color:#c0c5ce;">| {
+    bindings.</span><span style="color:#96b5b4;">insert</span><span style="color:#c0c5ce;">(name.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">(), wrapped_type);
+    </span><span style="color:#96b5b4;">check_expr</span><span style="color:#c0c5ce;">(engine, bindings, rhs_expr)
+})?;
+engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(rhs_type, result_bound)?;
+</span></code></pre>
+<p>如前所述，我们在子作用域中推断主题的子表达式的类型，子作用域中存在一个名为 <code>name</code> 、类型为 <code>wrapped_type</code> 的变量。最后，我们从主题类型向结果变量添加一个流边。(记住，这就是我们将所有匹配分支的主体类型联合在一起的方式)。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> bound = engine.</span><span style="color:#96b5b4;">case_use</span><span style="color:#c0c5ce;">(case_type_pairs);
+engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(match_type, bound)?;
+Ok(result_type)
+</span></code></pre>
+<p>最后，我们将创建的对列表传给 <code>engine.case_use</code> 来创建一个巨大的 case 用类型，并添加一个从输入类型到该用法的流约束。然后返回 <code>result_type</code> (所有匹配分支主题类型的联合)作为整个匹配表达式的类型。</p>
+<p>噢! 幸运的是，如果你能够做到这一点，剩下的情况应该很简单。</p>
+<h4 id="han-shu-ding-yi-he-han-shu-diao-yong">函数定义和函数调用</h4>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">FuncDef(arg_name, body_expr) =&gt; {
+    </span><span style="color:#b48ead;">let </span><span style="color:#c0c5ce;">(arg_type, arg_bound) = engine.</span><span style="color:#96b5b4;">var</span><span style="color:#c0c5ce;">();
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> body_type = bindings.</span><span style="color:#96b5b4;">in_child_scope</span><span style="color:#c0c5ce;">(|</span><span style="color:#bf616a;">bindings</span><span style="color:#c0c5ce;">| {
+        bindings.</span><span style="color:#96b5b4;">insert</span><span style="color:#c0c5ce;">(arg_name.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">(), arg_type);
+        </span><span style="color:#96b5b4;">check_expr</span><span style="color:#c0c5ce;">(engine, bindings, body_expr)
+    })?;
+    Ok(engine.</span><span style="color:#96b5b4;">func</span><span style="color:#c0c5ce;">(arg_bound, body_type))
+}
+Call(func_expr, arg_expr) =&gt; {
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> func_type = </span><span style="color:#96b5b4;">check_expr</span><span style="color:#c0c5ce;">(engine, bindings, func_expr)?;
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> arg_type = </span><span style="color:#96b5b4;">check_expr</span><span style="color:#c0c5ce;">(engine, bindings, arg_expr)?;
+
+    </span><span style="color:#b48ead;">let </span><span style="color:#c0c5ce;">(ret_type, ret_bound) = engine.</span><span style="color:#96b5b4;">var</span><span style="color:#c0c5ce;">();
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> bound = engine.</span><span style="color:#96b5b4;">func_use</span><span style="color:#c0c5ce;">(arg_type, ret_bound);
+    engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(func_type, bound)?;
+    Ok(ret_type)
+}
+</span></code></pre>
+<p>如前所述，函数的处理方式与记录和 case 非常相似。但是，有一个转折 - 函数参数是<em>逆变的</em>，也就是说，函数值类型的参数类型是<em>用类型</em>，函数用类型的参数是<em>值类型</em>。</p>
+<p>对于函数定义，我们首先创建一个代表函数参数的临时变量 <code>(arg_type，arg_bound)</code>。然后，在一个子作用域内对函数体进行类型检查，该子作用域包含一个名为 <code>arg_name</code> 、类型为 <code>arg_type</code> 的绑定。最后，返回函数值类型 <code>engine.func(arg_bound, body_type)</code>。</p>
+<p>对于函数调用，我们首先用 <code>check_expr</code> 得到两个子表达式的类型。然后创建临时变量 <code>(ret_type, ret_bound)</code> 来表示函数调用的返回类型。最后，添加从 <code>func_type</code> 到用法 <code>engine.func_use(arg_type, ret_bound)</code> 的流约束，并返回 <code>ret_type</code> 作为整个调用表达式的类型。</p>
+<h4 id="let-biao-da-shi">Let 表达式</h4>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">Let((name, var_expr), rest_expr) =&gt; {
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> var_type = </span><span style="color:#96b5b4;">check_expr</span><span style="color:#c0c5ce;">(engine, bindings, var_expr)?;
+    bindings.</span><span style="color:#96b5b4;">in_child_scope</span><span style="color:#c0c5ce;">(|</span><span style="color:#bf616a;">bindings</span><span style="color:#c0c5ce;">| {
+        bindings.</span><span style="color:#96b5b4;">insert</span><span style="color:#c0c5ce;">(name.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">(), var_type);
+        </span><span style="color:#96b5b4;">check_expr</span><span style="color:#c0c5ce;">(engine, bindings, rest_expr)
+    })
+}
+</span></code></pre>
+<p>Let 表达式也很直接。我们只需要得到变量定义表达式的类型，然后在子作用域中对 let 表达式的主体进行类型检查，子作用域内使用结果类型定义该变量。</p>
+<blockquote>
+<p><strong>注:</strong> 这里介绍的类型检查算法使得 let 表达式具有单态性。我们将在后面的文章中介绍如何实现 let 多态性。如果你不熟悉 let 多态性，暂时不用担心。所有的一切都会及时解释。</p>
+</blockquote>
+<h4 id="let-rec-biao-da-shi-dan-yi-ding-yi">Let rec 表达式 (单一定义)</h4>
+<p>递归的 let 表达式比较复杂，因为它们可以包含多个变量定义。因此，我们先来看看如何处理只包含一个变量定义的 let-rec。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">LetRec(defs, rest_expr) =&gt; bindings.</span><span style="color:#96b5b4;">in_child_scope</span><span style="color:#c0c5ce;">(|</span><span style="color:#bf616a;">bindings</span><span style="color:#c0c5ce;">| {
+    </span><span style="color:#b48ead;">let </span><span style="color:#c0c5ce;">(</span><span style="color:#b48ead;">ref</span><span style="color:#c0c5ce;"> name, </span><span style="color:#b48ead;">ref</span><span style="color:#c0c5ce;"> expr) = defs[</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">]; </span><span style="color:#65737e;">// 目前只处理一个变量定义
+
+    </span><span style="color:#b48ead;">let </span><span style="color:#c0c5ce;">(temp_type, temp_bound) = engine.</span><span style="color:#96b5b4;">var</span><span style="color:#c0c5ce;">();
+    bindings.</span><span style="color:#96b5b4;">insert</span><span style="color:#c0c5ce;">(name.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">(), temp_type);
+
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> var_type = </span><span style="color:#96b5b4;">check_expr</span><span style="color:#c0c5ce;">(engine, bindings, expr)?;
+    engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(var_type, temp_bound)?;
+
+    </span><span style="color:#96b5b4;">check_expr</span><span style="color:#c0c5ce;">(engine, bindings, rest_expr)
+}),
+</span></code></pre>
+<p>带有单个变量的递归 let 表达式和常规 let 表达式一样，只是变量的定义可以看到自己的绑定。为了处理这个问题，我们创建一个临时类型变量，并在对 let 变量的定义进行类型检查<em>前</em>将其添加到绑定中。一旦有了定义的类型，我们就添加从变量类型到创建的临时变量的流约束，从而确保它们是相同的。其余的处理（对主体进行类型检查）与之前的方法相同。</p>
+<h4 id="let-rec-biao-da-shi-duo-zhong-ding-yi">Let rec 表达式 (多重定义)</h4>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">LetRec(defs, rest_expr) =&gt; bindings.</span><span style="color:#96b5b4;">in_child_scope</span><span style="color:#c0c5ce;">(|</span><span style="color:#bf616a;">bindings</span><span style="color:#c0c5ce;">| {
+    </span><span style="color:#b48ead;">let mut</span><span style="color:#c0c5ce;"> temp_bounds = Vec::with_capacity(defs.</span><span style="color:#96b5b4;">len</span><span style="color:#c0c5ce;">());
+    </span><span style="color:#b48ead;">for </span><span style="color:#c0c5ce;">(name, _) in defs {
+        </span><span style="color:#b48ead;">let </span><span style="color:#c0c5ce;">(temp_type, temp_bound) = engine.</span><span style="color:#96b5b4;">var</span><span style="color:#c0c5ce;">();
+        bindings.</span><span style="color:#96b5b4;">insert</span><span style="color:#c0c5ce;">(name.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">(), temp_type);
+        temp_bounds.</span><span style="color:#96b5b4;">push</span><span style="color:#c0c5ce;">(temp_bound);
+    }
+
+    </span><span style="color:#b48ead;">for </span><span style="color:#c0c5ce;">((_, expr), bound) in defs.</span><span style="color:#96b5b4;">iter</span><span style="color:#c0c5ce;">().</span><span style="color:#96b5b4;">zip</span><span style="color:#c0c5ce;">(temp_bounds) {
+        </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> var_type = </span><span style="color:#96b5b4;">check_expr</span><span style="color:#c0c5ce;">(engine, bindings, expr)?;
+        engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(var_type, bound)?;
+    }
+
+    </span><span style="color:#96b5b4;">check_expr</span><span style="color:#c0c5ce;">(engine, bindings, rest_expr)
+}),
+</span></code></pre>
+<p>递归 let 表达式的实际处理器代码与此类似，但由于需要处理多个变量而变得复杂。我们为 <code>let rec</code> 中定义的每个变量创建临时类型变量。然而，<code>let rec</code> 中的<em>每个</em>变量定义都能看到该 <code>let rec</code> 定义的<em>每个</em>其他变量。因此，需要在对<em>任何一个</em>变量定义进行类型检查之前，将<em>所有</em>临时变量插入到绑定中，因此，我们需要将临时变量的副本存储在列表中，以便以后插入流边来关闭循环。剩下的就直接了当了。</p>
+<p>类型检查器前端的核心 <code>check_expr</code> 的实现就到此为止。(噢！)只剩下一些细节需要总结。</p>
+<h3 id="gao-xiao-bang-ding">高效绑定</h3>
+<p>上面给出的 <code>Bindings</code> 实现有个问题 - 每次下降进入子作用域时都复制整个绑定映射是非常低效的。幸运的是，有更好的解决方案。</p>
+<p>由于代码在任何给定的时间只访问单个作用域的绑定，所以起初需要复制绑定的唯一原因是为了防止在子作用域中所作的更改影响父作用域中的绑定。然而，有一种替代方法可以做到这一点 - 跟踪在子作用域中所作的更改，并在离开子作用域时<em>撤销</em>它们。</p>
+<p>为了做到这一点，我们维护一个变化的栈。每当为映射中以前不存在的名称插入绑定时，我们都会记下该名称，以便在退出时将其删除。每当为映射中以前已经存在的名称插入绑定时，我们都会记下该名称和映射中被新插入的值覆盖的旧值，以便在退出时用该名称将旧值添加回映射中。方便的是，Rust 的哈希映射实现中的 <code>insert</code> 方法在插入一个已经存在于映射中的键时，会返回旧值，所以很容易做到这一点。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#b48ead;">struct </span><span style="color:#c0c5ce;">Bindings {
+    </span><span style="color:#bf616a;">m</span><span style="color:#c0c5ce;">: HashMap&lt;String, Value&gt;,
+    </span><span style="color:#bf616a;">changes</span><span style="color:#c0c5ce;">: Vec&lt;(String, Option&lt;Value&gt;)&gt;,
+}
+</span><span style="color:#b48ead;">impl </span><span style="color:#c0c5ce;">Bindings {
+    </span><span style="color:#b48ead;">fn </span><span style="color:#8fa1b3;">new</span><span style="color:#c0c5ce;">() -&gt; </span><span style="color:#b48ead;">Self </span><span style="color:#c0c5ce;">{
+        </span><span style="color:#b48ead;">Self </span><span style="color:#c0c5ce;">{
+            m: HashMap::new(),
+            changes: Vec::new(),
+        }
+    }
+
+    </span><span style="color:#b48ead;">fn </span><span style="color:#8fa1b3;">get</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">k</span><span style="color:#c0c5ce;">: &amp;</span><span style="color:#b48ead;">str</span><span style="color:#c0c5ce;">) -&gt; Option&lt;Value&gt; {
+        </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.m.</span><span style="color:#96b5b4;">get</span><span style="color:#c0c5ce;">(k).</span><span style="color:#96b5b4;">copied</span><span style="color:#c0c5ce;">()
+    }
+
+    </span><span style="color:#b48ead;">fn </span><span style="color:#8fa1b3;">insert</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">k</span><span style="color:#c0c5ce;">: String, </span><span style="color:#bf616a;">v</span><span style="color:#c0c5ce;">: Value) {
+        </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> old = </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.m.</span><span style="color:#96b5b4;">insert</span><span style="color:#c0c5ce;">(k.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">(), v);
+        </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.changes.</span><span style="color:#96b5b4;">push</span><span style="color:#c0c5ce;">((k, old));
+    }
+
+    </span><span style="color:#b48ead;">fn </span><span style="color:#8fa1b3;">unwind</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">n</span><span style="color:#c0c5ce;">: </span><span style="color:#b48ead;">usize</span><span style="color:#c0c5ce;">) {
+        </span><span style="color:#b48ead;">while </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.changes.</span><span style="color:#96b5b4;">len</span><span style="color:#c0c5ce;">() &gt; n {
+            </span><span style="color:#b48ead;">let </span><span style="color:#c0c5ce;">(k, old) = </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.changes.</span><span style="color:#96b5b4;">pop</span><span style="color:#c0c5ce;">().</span><span style="color:#96b5b4;">unwrap</span><span style="color:#c0c5ce;">();
+            </span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> old {
+                Some(v) =&gt; </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.m.</span><span style="color:#96b5b4;">insert</span><span style="color:#c0c5ce;">(k, v),
+                None =&gt; </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.m.</span><span style="color:#96b5b4;">remove</span><span style="color:#c0c5ce;">(&amp;k),
+            };
+        }
+    }
+
+    </span><span style="color:#b48ead;">fn </span><span style="color:#8fa1b3;">in_child_scope</span><span style="color:#c0c5ce;">&lt;T&gt;(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">cb</span><span style="color:#c0c5ce;">: impl FnOnce(&amp;</span><span style="color:#bf616a;">mut Self</span><span style="color:#c0c5ce;">) -&gt; T) -&gt; T {
+        </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> n = </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.changes.</span><span style="color:#96b5b4;">len</span><span style="color:#c0c5ce;">();
+        </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> res = </span><span style="color:#96b5b4;">cb</span><span style="color:#c0c5ce;">(</span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">);
+        </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">unwind</span><span style="color:#c0c5ce;">(n);
+        res
+    }
+}
+</span></code></pre>
+<p>以上是 <code>Bindings</code> 的较快实现。我们在名为 <code>changes</code> 的 <code>Vec</code> （列表，这里用作栈）中跟踪变化。<code>get</code> 方法不变，而 <code>insert</code> 方法将插入的键和旧值（如果有的话）添加到变化栈中。</p>
+<p>如上所述，新的 <code>unwind</code> 方法撤销了截至给定点的变化。最后，<code>in_child_scope</code> 方法现在记下进入时变化栈的大小，并在回调返回后、返回调用者前展开到该点。</p>
+<h3 id="jian-cha-ding-ceng-ding-yi">检查顶层定义</h3>
+<p><code>check_expr</code> 函数推断<em>表达式</em>的类型，但是 cubiml 也允许在代码顶层使用不是表达式的<em>定义</em>。回想一下，顶层定义可以是普通的表达式，也可以是没有主体（<code>in &lt;expr&gt;</code> 部分）的 <code>let</code> 或 <code>let rec</code> 定义。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#b48ead;">fn </span><span style="color:#8fa1b3;">check_toplevel</span><span style="color:#c0c5ce;">(</span><span style="color:#bf616a;">engine</span><span style="color:#c0c5ce;">: &amp;</span><span style="color:#b48ead;">mut</span><span style="color:#c0c5ce;"> TypeCheckerCore, </span><span style="color:#bf616a;">bindings</span><span style="color:#c0c5ce;">: &amp;</span><span style="color:#b48ead;">mut</span><span style="color:#c0c5ce;"> Bindings, </span><span style="color:#bf616a;">def</span><span style="color:#c0c5ce;">: &amp;ast::TopLevel) -&gt; Result&lt;()&gt; {
+    </span><span style="color:#b48ead;">use </span><span style="color:#c0c5ce;">ast::TopLevel::*;
+    </span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> def {
+        Expr(expr) =&gt; {
+            </span><span style="color:#96b5b4;">check_expr</span><span style="color:#c0c5ce;">(engine, bindings, expr)?;
+        }
+        LetDef((name, var_expr)) =&gt; {
+            </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> var_type = </span><span style="color:#96b5b4;">check_expr</span><span style="color:#c0c5ce;">(engine, bindings, var_expr)?;
+            bindings.</span><span style="color:#96b5b4;">insert</span><span style="color:#c0c5ce;">(name.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">(), var_type);
+        }
+        LetRecDef(defs) =&gt; {
+            </span><span style="color:#b48ead;">let mut</span><span style="color:#c0c5ce;"> temp_bounds = Vec::with_capacity(defs.</span><span style="color:#96b5b4;">len</span><span style="color:#c0c5ce;">());
+            </span><span style="color:#b48ead;">for </span><span style="color:#c0c5ce;">(name, _) in defs {
+                </span><span style="color:#b48ead;">let </span><span style="color:#c0c5ce;">(temp_type, temp_bound) = engine.</span><span style="color:#96b5b4;">var</span><span style="color:#c0c5ce;">();
+                bindings.</span><span style="color:#96b5b4;">insert</span><span style="color:#c0c5ce;">(name.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">(), temp_type);
+                temp_bounds.</span><span style="color:#96b5b4;">push</span><span style="color:#c0c5ce;">(temp_bound);
+            }
+
+            </span><span style="color:#b48ead;">for </span><span style="color:#c0c5ce;">((_, expr), bound) in defs.</span><span style="color:#96b5b4;">iter</span><span style="color:#c0c5ce;">().</span><span style="color:#96b5b4;">zip</span><span style="color:#c0c5ce;">(temp_bounds) {
+                </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> var_type = </span><span style="color:#96b5b4;">check_expr</span><span style="color:#c0c5ce;">(engine, bindings, expr)?;
+                engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(var_type, bound)?;
+            }
+        }
+    };
+    Ok(())
+}
+</span></code></pre>
+<p><code>check_toplevel</code> 基本上与之前看到的代码相同，除了在顶层定义中定义的变量会被添加到全局作用域中，而不是只在定义的主体中可见。因此，没有对 <code>in_child_scope</code> 的调用。</p>
+<h3 id="typeckstate">TypeckState</h3>
+<p>最后，我们有一个封装类 <code>TypeckState</code>，它封装了上面看到的所有代码，并为调用者提供了一个更方便的接口。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#b48ead;">pub struct </span><span style="color:#c0c5ce;">TypeckState {
+    </span><span style="color:#bf616a;">core</span><span style="color:#c0c5ce;">: TypeCheckerCore,
+    </span><span style="color:#bf616a;">bindings</span><span style="color:#c0c5ce;">: Bindings,
+}
+</span><span style="color:#b48ead;">impl </span><span style="color:#c0c5ce;">TypeckState {
+    </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">new</span><span style="color:#c0c5ce;">() -&gt; </span><span style="color:#b48ead;">Self </span><span style="color:#c0c5ce;">{
+        </span><span style="color:#b48ead;">Self </span><span style="color:#c0c5ce;">{
+            core: TypeCheckerCore::new(),
+            bindings: Bindings::new(),
+        }
+    }
+
+    </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">check_script</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">parsed</span><span style="color:#c0c5ce;">: &amp;[ast::TopLevel]) -&gt; Result&lt;()&gt; {
+        </span><span style="color:#65737e;">// 创建整个类型状态的临时副本，这样就可以在脚本包含错误时回滚所有的更改
+        </span><span style="color:#b48ead;">let mut</span><span style="color:#c0c5ce;"> temp = </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.core.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">();
+
+        </span><span style="color:#b48ead;">for</span><span style="color:#c0c5ce;"> item in parsed {
+            </span><span style="color:#b48ead;">if let </span><span style="color:#c0c5ce;">Err(e) = </span><span style="color:#96b5b4;">check_toplevel</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.core, &amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.bindings, item) {
+                </span><span style="color:#65737e;">// 回滚对类型状态和绑定的更改
+                </span><span style="color:#c0c5ce;">std::mem::swap(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.core, &amp;</span><span style="color:#b48ead;">mut</span><span style="color:#c0c5ce;"> temp);
+                </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.bindings.</span><span style="color:#96b5b4;">unwind</span><span style="color:#c0c5ce;">(</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">);
+                </span><span style="color:#b48ead;">return </span><span style="color:#c0c5ce;">Err(e);
+            }
+        }
+
+        </span><span style="color:#65737e;">// 现在脚本类型检查成功了，将全局定义从变更回滚列表中删除，使其永久化
+        </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.bindings.changes.</span><span style="color:#96b5b4;">clear</span><span style="color:#c0c5ce;">();
+        Ok(())
+    }
+}
+</span></code></pre>
+<p>这里还有最后一个微妙的地方。当定义被输入到 REPL 中时，它们可能包含错误。包含错误的定义不会被实际执行，所以它们定义的任何全局变量都不应该被后续代码使用。因此，在类型检查开始之前，我们先把所有的状态复制一份，如果有错误就把所有的事情都撤销。</p>
+<p>cubiml 类型检查器前端的实现到此结束。<a href="/blog/subtype-inference-by-example-part-4-the-typechecker-core">下周</a>，我们将开始类型检查器核心的实现，这样你就能看到那些 <code>engine.flow()</code> 调用实际在底层做什么。</p>
+
+    </div>
+
+
+</article>
+
+
+        </main>
+        <footer>
+            <p>
+                © 2021 firecodelab.com
+            </p>
+            <p>
+                
+                
+            </p>
+        </footer>
+    </div>
+</body>
+</html>

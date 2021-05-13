@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="zh-cn">
+<head>
+    <meta charset="utf-8">
+    <meta name="HandheldFriendly" content="True">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="referrer" content="no-referrer-when-downgrade">
+
+    <title>[译]通过例子学子类型推理（十二）：流类型和混合比较运算符</title>
+    <meta name="description" content="">
+
+    <link rel="stylesheet" href="https:&#x2F;&#x2F;firecodelab.com&#x2F;main.css">
+
+    
+
+    
+    
+</head>
+<body>
+    <a class="skip-main" href="#main">Skip to content</a>
+    <div class="container">
+        <header>
+            <h1 class="site-header">
+                <a href="https:&#x2F;&#x2F;firecodelab.com">Fire Code</a>
+            </h1>
+            <nav>
+                
+                
+                
+                <a  href="&#x2F;blog&#x2F;">博客</a>
+                
+                
+                <a  href="&#x2F;about&#x2F;">关于</a>
+                
+                
+            </nav>
+        </header>
+        <main id="main" tabindex="-1">
+            
+
+<article class="post">
+    <header>
+        <h1>[译]通过例子学子类型推理（十二）：流类型和混合比较运算符</h1>
+    </header>
+
+    
+    <div class="article-info">
+        
+        <div class="article-date">2021-04-12</div>
+        
+        <div class="article-taxonomies">
+            
+                <ul class="article-tags">
+                    
+                    <li><a href="https://firecodelab.com/tags/translate/">#translate</a></li>
+                    
+                    <li><a href="https://firecodelab.com/tags/compiler/">#compiler</a></li>
+                    
+                    <li><a href="https://firecodelab.com/tags/type-inference/">#type inference</a></li>
+                    
+                </ul>
+            
+        </div>
+        
+        <div class="article-original">[<a href="https:&#x2F;&#x2F;blog.polybdenum.com&#x2F;2020&#x2F;09&#x2F;26&#x2F;subtype-inference-by-example-part-12-flow-typing-and-mixed-comparison-operators.html" target="_blank">view original</a>]</div>
+        
+    </div>
+
+
+    <div class="content">
+        <p><a href="/blog/subtype-inference-by-example-part-11-the-value-restriction">上周</a>，我们完成了 let
+多态的实现，这是经典 Hindley-Milner 类型系统以及代数子类型系统中最后缺少的部分。目前为止，我们所实现的所有东西都是基于代数子类型化中提出的类型系统，或者至少是基于该系统的直接扩展。</p>
+<p>然而，本周我们将抛开优雅的窗口，看一些独特的功能，这些功能可以通过立方双合一 hack 进类型系统。具体来说，我们将实现混合比较运算符和流类型。</p>
+<h2 id="hun-he-bi-jiao-yun-suan-fu">混合比较运算符</h2>
+<p>回想一下，最初实现运算符时，我们为比较整型和浮点型引入了单独版本的比较运算符。也就是说，必须使用 <code>&lt;</code> 来比较整型，而使用 <code>&lt;.</code> 来比较浮点型。然而，如果我们能对两者使用相同的运算符，甚至直接比较整型和浮点型，那就更好了。</p>
+<pre style="background-color:#2b303b;">
+<code><span style="color:#c0c5ce;">&gt;&gt; 9007199254740992 &gt; 9007199254740992.0
+false
+
+&gt;&gt; 9007199254740992 &gt;= 9007199254740992.0
+true
+
+&gt;&gt; 9007199254740993 &gt; 9007199254740992.0
+true
+</span></code></pre>
+<p>到目前为止，值类型头和用类型头之间一直保持着美丽的对称性。然而，现在是时候打破这种局面了，增加一个新的用类型头，<code>UIntOrFloat</code>，没有对应的值类型。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">     UFloat,
+     UInt,
+     UStr,
++    UIntOrFloat,
+     UFunc {
+         arg: Value,
+         ret: Use,
+</span></code></pre>
+<p>接下来，需要更新 <code>check_heads</code> 来使用新头类型。<code>UInt或Float</code> 将与左边的 <code>VInt</code> <em>或</em> <code>VFloat</code> 进行匹配。从代码上看，这是一个相当微不足道的变化，但它仍然与最初的代数子类型论文中的设想相去甚远。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">         (&amp;VFloat, &amp;UFloat) =&gt; Ok(()),
+         (&amp;VInt, &amp;UInt) =&gt; Ok(()),
+         (&amp;VStr, &amp;UStr) =&gt; Ok(()),
++        (&amp;VInt, &amp;UIntOrFloat) =&gt; Ok(()),
++        (&amp;VFloat, &amp;UIntOrFloat) =&gt; Ok(()),
+
+         (&amp;VFunc { arg: arg1, ret: ret1 }, &amp;UFunc { arg: arg2, ret: ret2 }) =&gt; {
+             out.</span><span style="color:#96b5b4;">push</span><span style="color:#c0c5ce;">((ret1, ret2));
+</span></code></pre>
+<p>最后，更新 AST、语法、类型检查器前端等，来使用新类型。这个很直接，所以我就不深入介绍了。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">--- a/src/ast.rs
++++ b/src/ast.rs
+@@ -</span><span style="color:#d08770;">31</span><span style="color:#c0c5ce;">,</span><span style="color:#d08770;">8 </span><span style="color:#c0c5ce;">+</span><span style="color:#d08770;">31</span><span style="color:#c0c5ce;">,</span><span style="color:#d08770;">7 </span><span style="color:#c0c5ce;">@@ </span><span style="color:#b48ead;">pub enum </span><span style="color:#c0c5ce;">OpType {
+     FloatOp,
+     StrOp,
+
+-    IntCmp,
+-    FloatCmp,
++    IntOrFloatCmp,
+     AnyCmp,
+ }
+
+--- a/src/core.rs
++++ b/src/core.rs
+@@ -</span><span style="color:#d08770;">169</span><span style="color:#c0c5ce;">,</span><span style="color:#d08770;">6 </span><span style="color:#c0c5ce;">+</span><span style="color:#d08770;">172</span><span style="color:#c0c5ce;">,</span><span style="color:#d08770;">7 </span><span style="color:#c0c5ce;">@@ </span><span style="color:#b48ead;">fn </span><span style="color:#8fa1b3;">check_heads</span><span style="color:#c0c5ce;">(
+                 UFloat =&gt; &quot;float&quot;,
+                 UInt =&gt; &quot;integer&quot;,
+                 UStr =&gt; &quot;string&quot;,
++                UIntOrFloat =&gt; &quot;float or integer&quot;,
+                 UFunc { .. } =&gt; &quot;function&quot;,
+                 UObj { .. } =&gt; &quot;record&quot;,
+                 UCase { .. } =&gt; &quot;case&quot;,
+@@ -269,6 +273,9 @@ impl TypeCheckerCore {
+     pub fn str_use(&amp;</span><span style="color:#bf616a;">mut self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">span</span><span style="color:#c0c5ce;">: </span><span style="color:#bf616a;">Span</span><span style="color:#c0c5ce;">) -&gt; Use {
+         </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.new_use(</span><span style="color:#bf616a;">UTypeHead</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">UStr</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">span</span><span style="color:#c0c5ce;">)
+     }
++    pub fn int_or_float_use(&amp;</span><span style="color:#bf616a;">mut self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">span</span><span style="color:#c0c5ce;">: </span><span style="color:#bf616a;">Span</span><span style="color:#c0c5ce;">) -&gt; Use {
++        </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.new_use(</span><span style="color:#bf616a;">UTypeHead</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">UIntOrFloat</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">span</span><span style="color:#c0c5ce;">)
++    }
+
+     pub fn func(&amp;</span><span style="color:#bf616a;">mut self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">arg</span><span style="color:#c0c5ce;">: </span><span style="color:#bf616a;">Use</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">ret</span><span style="color:#c0c5ce;">: </span><span style="color:#bf616a;">Value</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">span</span><span style="color:#c0c5ce;">: </span><span style="color:#bf616a;">Span</span><span style="color:#c0c5ce;">) -&gt; Value {
+         </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.new_val(</span><span style="color:#bf616a;">VTypeHead</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">VFunc</span><span style="color:#c0c5ce;"> { </span><span style="color:#bf616a;">arg</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">ret</span><span style="color:#c0c5ce;"> }, </span><span style="color:#bf616a;">span</span><span style="color:#c0c5ce;">)
+
+--- a/src/grammar.lalr
++++ b/src/grammar.lalr
+@@ -164,15 +164,10 @@ </span><span style="color:#bf616a;">AddOp</span><span style="color:#c0c5ce;">: Box&lt;ast::Expr&gt; = {
+     },
+ }
+ </span><span style="color:#bf616a;">CmpOpSub</span><span style="color:#c0c5ce;">: (</span><span style="color:#bf616a;">ast</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">OpType</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">ast</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">Op</span><span style="color:#c0c5ce;">) = {
+-    &quot;&lt;</span><span style="background-color:#bf616a;color:#2b303b;">&quot;</span><span style="color:#c0c5ce;"> =&gt; (</span><span style="color:#bf616a;">ast</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">OpType</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">IntCmp</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">ast</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">Op</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">Lt</span><span style="color:#c0c5ce;">),
+-    &quot;&lt;=</span><span style="background-color:#bf616a;color:#2b303b;">&quot;</span><span style="color:#c0c5ce;"> =&gt; (</span><span style="color:#bf616a;">ast</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">OpType</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">IntCmp</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">ast</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">Op</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">Lte</span><span style="color:#c0c5ce;">),
+-    &quot;&gt;&quot; =&gt; (</span><span style="color:#bf616a;">ast</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">OpType</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">IntCmp</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">ast</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">Op</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">Gt</span><span style="color:#c0c5ce;">),
+-    &quot;&gt;=&quot; =&gt; (</span><span style="color:#bf616a;">ast</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">OpType</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">IntCmp</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">ast</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">Op</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">Gte</span><span style="color:#c0c5ce;">),
+-
+-    &quot;&lt;</span><span style="background-color:#bf616a;color:#2b303b;">.</span><span style="color:#c0c5ce;">&quot; =&gt; (</span><span style="color:#bf616a;">ast</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">OpType</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">FloatCmp</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">ast</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">Op</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">Lt</span><span style="color:#c0c5ce;">),
+-    &quot;&lt;=</span><span style="background-color:#bf616a;color:#2b303b;">.</span><span style="color:#c0c5ce;">&quot; =&gt; (</span><span style="color:#bf616a;">ast</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">OpType</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">FloatCmp</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">ast</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">Op</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">Lte</span><span style="color:#c0c5ce;">),
+-    &quot;&gt;.&quot; =&gt; (</span><span style="color:#bf616a;">ast</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">OpType</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">FloatCmp</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">ast</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">Op</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">Gt</span><span style="color:#c0c5ce;">),
+-    &quot;&gt;=.&quot; =&gt; (</span><span style="color:#bf616a;">ast</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">OpType</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">FloatCmp</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">ast</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">Op</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">Gte</span><span style="color:#c0c5ce;">),
++    &quot;&lt;</span><span style="background-color:#bf616a;color:#2b303b;">&quot;</span><span style="color:#c0c5ce;"> =&gt; (</span><span style="color:#bf616a;">ast</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">OpType</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">IntOrFloatCmp</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">ast</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">Op</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">Lt</span><span style="color:#c0c5ce;">),
++    &quot;&lt;=</span><span style="background-color:#bf616a;color:#2b303b;">&quot;</span><span style="color:#c0c5ce;"> =&gt; (</span><span style="color:#bf616a;">ast</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">OpType</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">IntOrFloatCmp</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">ast</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">Op</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">Lte</span><span style="color:#c0c5ce;">),
++    &quot;&gt;&quot; =&gt; (</span><span style="color:#bf616a;">ast</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">OpType</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">IntOrFloatCmp</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">ast</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">Op</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">Gt</span><span style="color:#c0c5ce;">),
++    &quot;&gt;=&quot; =&gt; (</span><span style="color:#bf616a;">ast</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">OpType</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">IntOrFloatCmp</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">ast</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">Op</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">Gte</span><span style="color:#c0c5ce;">),
+
+     &quot;==&quot; =&gt; (</span><span style="color:#bf616a;">ast</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">OpType</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">AnyCmp</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">ast</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">Op</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">Eq</span><span style="color:#c0c5ce;">),
+     &quot;!=&quot; =&gt; (</span><span style="color:#bf616a;">ast</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">OpType</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">AnyCmp</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">ast</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">Op</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">Neq</span><span style="color:#c0c5ce;">),
+
+--- a/src/typeck.rs
++++ b/src/typeck.rs
+@@ -90,16 +90,9 @@ fn check_expr(</span><span style="color:#bf616a;">engine</span><span style="color:#c0c5ce;">: &amp;</span><span style="color:#bf616a;">mut TypeCheckerCore</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">bindings</span><span style="color:#c0c5ce;">: &amp;</span><span style="color:#bf616a;">mut Bindings</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">expr</span><span style="color:#c0c5ce;">: &amp;</span><span style="color:#bf616a;">ast</span><span style="color:#c0c5ce;">:
+                     </span><span style="color:#bf616a;">engine</span><span style="color:#c0c5ce;">.</span><span style="color:#bf616a;">flow</span><span style="color:#c0c5ce;">(</span><span style="color:#bf616a;">rhs_type</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">rhs_bound</span><span style="color:#c0c5ce;">)?;
+                     engine.</span><span style="color:#b48ead;">str</span><span style="color:#c0c5ce;">(*</span><span style="color:#bf616a;">full_span</span><span style="color:#c0c5ce;">)
+                 }
+-                IntCmp =&gt; {
+-                    let lhs_bound = engine.int_use(*</span><span style="color:#bf616a;">lhs_span</span><span style="color:#c0c5ce;">);
+-                    let rhs_bound = engine.int_use(*</span><span style="color:#bf616a;">rhs_span</span><span style="color:#c0c5ce;">);
+-                    engine.flow(</span><span style="color:#bf616a;">lhs_type</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">lhs_bound</span><span style="color:#c0c5ce;">)?;
+-                    engine.flow(</span><span style="color:#bf616a;">rhs_type</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">rhs_bound</span><span style="color:#c0c5ce;">)?;
+-                    engine.</span><span style="color:#b48ead;">bool</span><span style="color:#c0c5ce;">(*</span><span style="color:#bf616a;">full_span</span><span style="color:#c0c5ce;">)
+-                }
+-                FloatCmp =&gt; {
+-                    let lhs_bound = engine.float_use(*</span><span style="color:#bf616a;">lhs_span</span><span style="color:#c0c5ce;">);
+-                    let rhs_bound = engine.float_use(*</span><span style="color:#bf616a;">rhs_span</span><span style="color:#c0c5ce;">);
++                IntOrFloatCmp =&gt; {
++                    let lhs_bound = engine.int_or_float_use(*</span><span style="color:#bf616a;">lhs_span</span><span style="color:#c0c5ce;">);
++                    let rhs_bound = engine.int_or_float_use(*</span><span style="color:#bf616a;">rhs_span</span><span style="color:#c0c5ce;">);
+                     engine.flow(</span><span style="color:#bf616a;">lhs_type</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">lhs_bound</span><span style="color:#c0c5ce;">)?;
+                     engine.flow(</span><span style="color:#bf616a;">rhs_type</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">rhs_bound</span><span style="color:#c0c5ce;">)?;
+                     engine.</span><span style="color:#b48ead;">bool</span><span style="color:#c0c5ce;">(*</span><span style="color:#bf616a;">full_span</span><span style="color:#c0c5ce;">)
+</span></code></pre><h2 id="liu-lei-xing">流类型</h2>
+<p>在现代编程语言中，你可以用一种方式使用 <em>case 类型</em>（又名 sum 类型）来表示具有几种可能的值和/或类型之一的值，可以由编译器静态检查。例如，下面的 cubiml 代码实现了单例模式，最多调用一次提供的初始化函数，使用 <code>None</code> 和 <code>Some</code> 中的 case 类型分别表示数据未初始化和已经初始化的状态。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#b48ead;">let </span><span style="color:#bf616a;">lazy_init </span><span style="color:#c0c5ce;">= fun init_cb -&gt;
+    </span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">cache </span><span style="color:#c0c5ce;">= </span><span style="color:#b48ead;">ref </span><span style="color:#c0c5ce;">`None {} </span><span style="color:#b48ead;">in
+    fun </span><span style="color:#bf616a;">_ </span><span style="color:#c0c5ce;">-&gt;
+        </span><span style="color:#b48ead;">match </span><span style="color:#c0c5ce;">!cache </span><span style="color:#b48ead;">with
+        | </span><span style="color:#c0c5ce;">`Some </span><span style="color:#bf616a;">val </span><span style="color:#c0c5ce;">-&gt; val
+        </span><span style="color:#b48ead;">| </span><span style="color:#c0c5ce;">`None </span><span style="color:#d08770;">_ </span><span style="color:#c0c5ce;">-&gt; (
+                </span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">val </span><span style="color:#c0c5ce;">= init_cb {} </span><span style="color:#b48ead;">in
+                let</span><span style="color:#c0c5ce;"> _ = cache := `Some val </span><span style="color:#b48ead;">in
+</span><span style="color:#c0c5ce;">                val
+            );
+</span></code></pre>
+<p>然而，旧的语言，特别是 C 启发的语言，可能没有 case 类型。然而，表达具有多种可能性之一的值的需求并不会因为语言没有很好地支持它而消失。相反，这些语言中的程序员会隐式模拟 case 类型，而没有真正的 case 类型的语言支持或静态类型检查。</p>
+<p>例如，在 C 风格的语言中，程序员可能会使用空指针来代表未初始化状态，非空指针代表初始化状态来写上面的代码。每当他们读取值时，他们就需要在使用前对其进行空检查，但没有编译器辅助来强制执行这一点。事实上，忘记检查空值是一个很常见的错误，以至于空指针经常被称为“十亿美金的错误”。</p>
+<p>类型系统和类型推理通常是在设计一种新语言的背景下讨论的。然而，也可以为<em>现有的</em>编程语言创建新的类型检查器。这样做要难得多，因为你不再有能力塑造语言特性以方便类型检查，而是必须在你希望分析的遗留代码中与程序员正在使用的任何临时代码模式打交道。</p>
+<p>然而，回报也是巨大的，因为它允许你在现有遗留代码的庞大生态系统中捕捉问题。这方面的大多数努力都集中在 C 和 JavaScript 上，因为它们巨大的经济重要性，只有它们巨大的错误倾向才能匹配。例如，TypeScript 就是为了改进 JS 代码的类型检查而做出的努力。</p>
+<p>此外，即使在设计一种新语言时，你也可能需要添加空指针以实现与现有语言的互操作性。例如，Kotlin 通过密封类和 when 表达式来支持 sum 类型，但它为了和 Java 的互操作性，仍然有空指针。</p>
+<h3 id="kong-an-quan">空安全</h3>
+<p>类型检查遗留代码意味着找到处理现有代码模式的方法，这通常意味着增加一种有限制的流敏感类型形式。今天我将演示一个最简单的情况，静态空值安全检查。</p>
+<p>我们的目标是静态地确保潜在的空值如果没有先通过 <code>if x != null then ...</code> 或类似的代码对其进行空检查，就永远不会被使用。为了做到这一点，我们识别这样的 if 表达式，并在类型检查器中对其进行特殊处理，将其视为对隐式 case 类型的匹配。</p>
+<p>然而，还有一个复杂的问题 - 如何暴露精炼类型。我们的匹配表达式语法从一开始就是为处理 case 类型而设计的，所以每个分支都绑定了具有相应类型的新变量。例如，在</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> foo </span><span style="color:#b48ead;">with
+    </span><span style="color:#c0c5ce;">| `None _ =&gt; ...
+    |  non_null_foo =&gt; ...
+</span></code></pre>
+<p>中，<code>non_null_foo</code> 变量的类型将与 <code>foo</code> 相同，只是静态地移除了 <code>None</code> case。然而，如果试图将传统的 if 表达式转换为模式匹配，我们就没有这种奢侈。普通的 if 语句不会引入任何新变量，我们可以将精炼类型赋予这些变量。</p>
+<p>因此，我们将特殊 case 的处理限制在条件形式为 <code>foo == null </code> 或 <code>foo != null</code> 的 if 表达式的 case 下，其中 <code>foo</code> 是<em>局部变量</em>（而不是任意表达式）。然后，在适当的分支中，我们可以<em>就地</em>给该变量赋予精炼类型。我们的目标是实现类似以下的功能</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#65737e;">(*  Create a value that might be null, at least from the
+    typechecker&#39;s point of view. *)
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">s </span><span style="color:#c0c5ce;">= </span><span style="color:#b48ead;">if </span><span style="color:#d08770;">true </span><span style="color:#b48ead;">then </span><span style="color:#c0c5ce;">&quot;</span><span style="color:#a3be8c;">Hello</span><span style="color:#c0c5ce;">&quot; </span><span style="color:#b48ead;">else</span><span style="color:#c0c5ce;"> null;
+
+</span><span style="color:#65737e;">(* s has type &quot;string | null&quot; here *)
+</span><span style="color:#b48ead;">if</span><span style="color:#c0c5ce;"> s != null </span><span style="color:#b48ead;">then
+    </span><span style="color:#65737e;">(*  Within this branch, s instead has the type &quot;string&quot;.
+        String concatenation is allowed here since s is
+        statically known to be a string and not null. *)
+</span><span style="color:#c0c5ce;">    s ^ &quot;</span><span style="color:#a3be8c;"> world!</span><span style="color:#c0c5ce;">&quot;
+</span><span style="color:#b48ead;">else
+    </span><span style="color:#65737e;">(*  We could give s the type &quot;null&quot; here, but that&#39;s
+        pretty much useless, so we&#39;ll just leave its
+        type unchanged on the &quot;null&quot; branch *)
+    </span><span style="color:#c0c5ce;">&quot;</span><span style="color:#a3be8c;">error, unexpected null</span><span style="color:#c0c5ce;">&quot;;
+
+</span><span style="color:#65737e;">(* s has type &quot;string | null&quot; again here *)
+</span><span style="color:#c0c5ce;">s
+</span></code></pre><h3 id="kong-zhi">空值</h3>
+<p>首先，我们需要给 cubiml 添加空值。我们在类型系统中添加新基础类型 <code>null</code>，以及新字面量 <code>null</code> 来创建该类型的值。这非常直接，因为添加基础类型的过程与之前添加其他基础类型（如布尔值和字符串）的过程完全相同。唯一不同的是，有空值类型，但没有空用类型。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">@@ -</span><span style="color:#d08770;">5</span><span style="color:#c0c5ce;">,</span><span style="color:#d08770;">6 </span><span style="color:#c0c5ce;">+</span><span style="color:#d08770;">5</span><span style="color:#c0c5ce;">,</span><span style="color:#d08770;">7 </span><span style="color:#c0c5ce;">@@ </span><span style="color:#b48ead;">pub enum </span><span style="color:#c0c5ce;">Literal {
+     Bool,
+     Float,
+     Int,
++    Null,
+     Str,
+ }
+
+@@ -</span><span style="color:#d08770;">17</span><span style="color:#c0c5ce;">,</span><span style="color:#d08770;">6 </span><span style="color:#c0c5ce;">+</span><span style="color:#d08770;">17</span><span style="color:#c0c5ce;">,</span><span style="color:#d08770;">7 </span><span style="color:#c0c5ce;">@@ </span><span style="color:#b48ead;">enum </span><span style="color:#c0c5ce;">VTypeHead {
+     VBool,
+     VFloat,
+     VInt,
++    VNull,
+     VStr,
+     VFunc {
+         arg: Use,
+@@ -</span><span style="color:#d08770;">161</span><span style="color:#c0c5ce;">,</span><span style="color:#d08770;">6 </span><span style="color:#c0c5ce;">+</span><span style="color:#d08770;">162</span><span style="color:#c0c5ce;">,</span><span style="color:#d08770;">7 </span><span style="color:#c0c5ce;">@@ </span><span style="color:#b48ead;">fn </span><span style="color:#8fa1b3;">check_heads</span><span style="color:#c0c5ce;">(
+                 VBool =&gt; &quot;boolean&quot;,
+                 VFloat =&gt; &quot;float&quot;,
+                 VInt =&gt; &quot;integer&quot;,
++                VNull =&gt; &quot;null&quot;,
+                 VStr =&gt; &quot;string&quot;,
+                 VFunc { .. } =&gt; &quot;function&quot;,
+                 VObj { .. } =&gt; &quot;record&quot;,
+@@ -257,6 +259,9 @@ impl TypeCheckerCore {
+     pub fn int(&amp;</span><span style="color:#bf616a;">mut self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">span</span><span style="color:#c0c5ce;">: </span><span style="color:#bf616a;">Span</span><span style="color:#c0c5ce;">) -&gt; Value {
+         </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.new_val(</span><span style="color:#bf616a;">VTypeHead</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">VInt</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">span</span><span style="color:#c0c5ce;">)
+     }
++    pub fn null(&amp;</span><span style="color:#bf616a;">mut self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">span</span><span style="color:#c0c5ce;">: </span><span style="color:#bf616a;">Span</span><span style="color:#c0c5ce;">) -&gt; Value {
++        </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.new_val(</span><span style="color:#bf616a;">VTypeHead</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">VNull</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">span</span><span style="color:#c0c5ce;">)
++    }
+     pub fn </span><span style="color:#b48ead;">str</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#bf616a;">mut self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">span</span><span style="color:#c0c5ce;">: </span><span style="color:#bf616a;">Span</span><span style="color:#c0c5ce;">) -&gt; Value {
+         </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.new_val(</span><span style="color:#bf616a;">VTypeHead</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">VStr</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">span</span><span style="color:#c0c5ce;">)
+     }
+
+@@ -38,6 +38,7 @@ </span><span style="color:#bf616a;">VarOrLiteral</span><span style="color:#c0c5ce;">: Box&lt;ast::Expr&gt; = {
+     Spanned&lt;Ident&gt; =&gt; </span><span style="color:#b48ead;">Box::</span><span style="color:#c0c5ce;">new(
+         </span><span style="color:#bf616a;">match</span><span style="color:#c0c5ce;"> &lt;&gt;.0.</span><span style="color:#bf616a;">as_str</span><span style="color:#c0c5ce;">() {
+             &quot;false&quot; | &quot;true&quot; =&gt; ast::</span><span style="color:#b48ead;">Expr::</span><span style="color:#c0c5ce;">Literal(</span><span style="color:#bf616a;">ast</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">Literal</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">Bool</span><span style="color:#c0c5ce;">, &lt;&gt;),
++            &quot;null&quot; =&gt; ast::</span><span style="color:#b48ead;">Expr::</span><span style="color:#c0c5ce;">Literal(</span><span style="color:#bf616a;">ast</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">Literal</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">Null</span><span style="color:#c0c5ce;">, &lt;&gt;),
+             _ =&gt; ast::</span><span style="color:#b48ead;">Expr::</span><span style="color:#c0c5ce;">Variable(&lt;&gt;)
+         }
+     ),
+
+@@ -</span><span style="color:#d08770;">160</span><span style="color:#c0c5ce;">,</span><span style="color:#d08770;">6 </span><span style="color:#c0c5ce;">+</span><span style="color:#d08770;">160</span><span style="color:#c0c5ce;">,</span><span style="color:#d08770;">7 </span><span style="color:#c0c5ce;">@@ </span><span style="color:#b48ead;">fn </span><span style="color:#8fa1b3;">check_expr</span><span style="color:#c0c5ce;">(</span><span style="color:#bf616a;">engine</span><span style="color:#c0c5ce;">: &amp;</span><span style="color:#b48ead;">mut</span><span style="color:#c0c5ce;"> TypeCheckerCore, </span><span style="color:#bf616a;">bindings</span><span style="color:#c0c5ce;">: &amp;</span><span style="color:#b48ead;">mut</span><span style="color:#c0c5ce;"> Bindings, </span><span style="color:#bf616a;">expr</span><span style="color:#c0c5ce;">: &amp;</span><span style="color:#bf616a;">ast</span><span style="color:#c0c5ce;">:
+                 Bool =&gt; engine.</span><span style="color:#b48ead;">bool</span><span style="color:#c0c5ce;">(</span><span style="color:#bf616a;">span</span><span style="color:#c0c5ce;">),
+                 Float =&gt; engine.float(</span><span style="color:#bf616a;">span</span><span style="color:#c0c5ce;">),
+                 Int =&gt; engine.int(</span><span style="color:#bf616a;">span</span><span style="color:#c0c5ce;">),
++                Null =&gt; engine.null(</span><span style="color:#bf616a;">span</span><span style="color:#c0c5ce;">),
+                 Str =&gt; engine.</span><span style="color:#b48ead;">str</span><span style="color:#c0c5ce;">(</span><span style="color:#bf616a;">span</span><span style="color:#c0c5ce;">),
+             })
+         }
+</span></code></pre><h3 id="kong-jian-cha-lei-xing">空检查类型</h3>
+<p>接下来，我们需要给类型系统增加空检查<em>用</em>类型。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">UNullCase {
+    nonnull: Use,
+},
+
+</span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">null_check_use</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">nonnull</span><span style="color:#c0c5ce;">: Use, </span><span style="color:#bf616a;">span</span><span style="color:#c0c5ce;">: Span) -&gt; Use {
+    </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">new_use</span><span style="color:#c0c5ce;">(UTypeHead::UNullCase { nonnull }, span)
+}
+</span></code></pre>
+<p>请注意，这里实际上从未使用过跨度参数，但我们仍然必须包含它，因为当前的设计为<em>每个</em>类型节点存储了跨度。</p>
+<p>接下来，在 <code>check_heads</code> 中添加支持。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">(&amp;VNull, &amp;UNullCase { .. }) =&gt; Ok(()),
+(_, &amp;UNullCase { nonnull }) =&gt; {
+    out.</span><span style="color:#96b5b4;">push</span><span style="color:#c0c5ce;">((Value(lhs_ind), nonnull));
+    Ok(())
+}
+</span></code></pre>
+<p>检查这种类型非常简单。它基本上只是之前介绍过的通配符 case 匹配的极其简化的版本。如果左边是非空值，我们从它那里添加流约束到用类型的 <code>nonnull</code> 字段，类似于 case 用类型的 <code>wildcard</code> 字段。如果左边是空值，就什么都不做。</p>
+<p>我们还需要把它添加到 <code>check_heads</code> 的 fallthrough 分支中，因为 Rust 还不够聪明，没有意识到它永远不会因为与左边的<em>任何</em>值类型匹配而卷入类型错误。</p>
+<pre style="background-color:#2b303b;">
+<code><span style="color:#c0c5ce;">                 UObj { .. } =&gt; &quot;record&quot;,
+                 UCase { .. } =&gt; &quot;case&quot;,
+                 URef { .. } =&gt; &quot;ref&quot;,
++                UNullCase { .. } =&gt; unreachable!(),
+             };
+</span></code></pre><h3 id="qian-duan-kong-jian-cha">前端空检查</h3>
+<p>现在到了最复杂的部分 - 实际使用这个类型。大部分的工作是在类型检查器前端完成的。回想一下，我们要找到 <code>if foo == null then...</code> 或 <code>if foo != null then...</code> 形式的表达式，并对它们进行特殊处理。</p>
+<p>要做到这一点，我们在前端找到处理 <code>If</code> 表达式的分支，并插入一堆代码来寻找 <code>if foo != null then...</code> 模式，并在这种情况下做一些不同的事情。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#65737e;">// Handle conditions of the form foo == null and foo != null specially
+</span><span style="color:#b48ead;">if let</span><span style="color:#c0c5ce;"> BinOp((lhs, _), (rhs, _), ast::OpType::AnyCmp, op, ..) = &amp;**cond_expr {
+    </span><span style="color:#b48ead;">if let</span><span style="color:#c0c5ce;"> Variable((name, _)) = &amp;**lhs {
+        </span><span style="color:#b48ead;">if let</span><span style="color:#c0c5ce;"> Literal(ast::Literal::Null, ..) = **rhs {
+            </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> lhs_type = </span><span style="color:#96b5b4;">check_expr</span><span style="color:#c0c5ce;">(engine, bindings, lhs)?;
+
+            </span><span style="color:#65737e;">// Flip order of branches if they wrote if foo == null instead of !=
+            </span><span style="color:#b48ead;">let </span><span style="color:#c0c5ce;">(ok_expr, else_expr) = </span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> op {
+                ast::Op::Neq =&gt; (then_expr, else_expr),
+                ast::Op::Eq =&gt; (else_expr, then_expr),
+                _ =&gt; unreachable!(),
+            };
+
+            </span><span style="color:#b48ead;">let </span><span style="color:#c0c5ce;">(nnvar_type, nnvar_bound) = engine.</span><span style="color:#96b5b4;">var</span><span style="color:#c0c5ce;">();
+            </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> bound = engine.</span><span style="color:#96b5b4;">null_check_use</span><span style="color:#c0c5ce;">(nnvar_bound, *span);
+            engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(lhs_type, bound)?;
+
+            </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> ok_type = bindings.</span><span style="color:#96b5b4;">in_child_scope</span><span style="color:#c0c5ce;">(|</span><span style="color:#bf616a;">bindings</span><span style="color:#c0c5ce;">| {
+                bindings.</span><span style="color:#96b5b4;">insert</span><span style="color:#c0c5ce;">(name.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">(), nnvar_type);
+                </span><span style="color:#96b5b4;">check_expr</span><span style="color:#c0c5ce;">(engine, bindings, ok_expr)
+            })?;
+            </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> else_type = </span><span style="color:#96b5b4;">check_expr</span><span style="color:#c0c5ce;">(engine, bindings, else_expr)?;
+
+            </span><span style="color:#b48ead;">let </span><span style="color:#c0c5ce;">(merged, merged_bound) = engine.</span><span style="color:#96b5b4;">var</span><span style="color:#c0c5ce;">();
+            engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(ok_type, merged_bound)?;
+            engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(else_type, merged_bound)?;
+            </span><span style="color:#b48ead;">return </span><span style="color:#c0c5ce;">Ok(merged);
+        }
+    }
+}
+</span></code></pre>
+<p>这是相当大的一块儿代码，所以我们把它分解开来。首先，检查 if 条件是否为 <code>foo == null</code> 或 <code>foo != null</code> 形式，其中 <code>foo</code> 是局部变量。然后，抓取该变量的（未精炼）类型，并将其存储在 <code>lhs_type</code> 中。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#b48ead;">if let</span><span style="color:#c0c5ce;"> BinOp((lhs, _), (rhs, _), ast::OpType::AnyCmp, op, ..) = &amp;**cond_expr {
+    </span><span style="color:#b48ead;">if let</span><span style="color:#c0c5ce;"> Variable((name, _)) = &amp;**lhs {
+        </span><span style="color:#b48ead;">if let</span><span style="color:#c0c5ce;"> Literal(ast::Literal::Null, ..) = **rhs {
+            </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> lhs_type = </span><span style="color:#96b5b4;">check_expr</span><span style="color:#c0c5ce;">(engine, bindings, lhs)?;
+</span></code></pre>
+<p>接下来，找到 if 表达式分支对应的 AST 子表达式，当被检查变量是非空或空时。对于 <code>!= null</code> 比较，这些分别只是 if 表达式的 then 和 else 分支。对于 <code>==null</code> 比较，这些分支是相反的。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#65737e;">// Flip order of branches if they wrote if foo == null instead of !=
+</span><span style="color:#b48ead;">let </span><span style="color:#c0c5ce;">(ok_expr, else_expr) = </span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> op {
+    ast::Op::Neq =&gt; (then_expr, else_expr),
+    ast::Op::Eq =&gt; (else_expr, then_expr),
+    _ =&gt; unreachable!(),
+};
+</span></code></pre>
+<p>接下来，需要细化 <code>lhs_type</code>，以获得类型的“非空版本”。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#b48ead;">let </span><span style="color:#c0c5ce;">(nnvar_type, nnvar_bound) = engine.</span><span style="color:#96b5b4;">var</span><span style="color:#c0c5ce;">();
+</span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> bound = engine.</span><span style="color:#96b5b4;">null_check_use</span><span style="color:#c0c5ce;">(nnvar_bound, *span);
+engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(lhs_type, bound)?;
+</span></code></pre>
+<p>这个过程与通配符 case 匹配非常相似，只是要简单的多，因为只有一个分支。回想一下，<code>null_check_use</code> 接收用类型参数。在 <code>check_heads</code> 中，每当对值类型头与产生的用类型头 <code>UNullCase</code> 进行检查时，当左边是非空的时候，我们会从左边（值）类型向右边存储的用类型添加流约束。当左手边为空时，什么都不做。</p>
+<p>假设 <code>lhs_type</code> 的类型是 <code>string | null</code>，下面是在类型检查器中，一步步发生的。</p>
+<ul>
+<li>添加流 <code>VString -&gt; lhs_type_bound</code>，其中 <code>lhs_type_bound</code> 是 <code>lhs_type</code> 类型变量的“左侧”(根据假设)</li>
+<li>添加流 <code>VNull -&gt; lhs_type_bound</code>(假设)</li>
+<li><code>bound = UNullCase{nonnull=nnvar_bound}</code></li>
+<li>添加流<code>lhs_type -&gt; bound</code>。
+<ul>
+<li>由于可到达性，这将产生对 <code>check_heads(VString, bound)</code> 和 <code>check_heads(VNull, bound)</code> 的调用</li>
+</ul>
+</li>
+<li><code>check_heads(VString, bound)</code>：
+<ul>
+<li><code>VString</code> 不为空，所以添加流约束 <code>VString -&gt; bound.nonnull</code>。</li>
+<li><code>bound.nonnull = nnvar_bound</code>，所以这意味着 <code>VString</code> 流向 <code>nnvar_bound</code>。</li>
+<li>由于 <code>nnvar_bound</code> 是 <code>nnvar_type</code> 代表的变量的“左半部分”，这意味着 <code>nnvar_type</code> “看到了” <code>VString</code>。我们可以认为 <code>nnvar_type</code> 现在是类型 <code>string</code>。</li>
+</ul>
+</li>
+<li><code>check_heads(VNull, bound)</code>：
+<ul>
+<li><code>VNull</code> 为空，所以不采取任何进一步的行动</li>
+</ul>
+</li>
+</ul>
+<p>最终结果是，当 <code>lhs_type</code> 类型为 <code>string | null</code> 时，<code>nnvar_type</code> 类型为 <code>string</code>。本质上，它是 <code>lhs_type</code> 的非空值版本，正如预期的那样。</p>
+<p>接下来，我们在新绑定环境中对非空分支进行类型检查，其中变量具有精炼类型 <code>nnvar_type</code> 而不是 <code>lhs_type</code>。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> ok_type = bindings.</span><span style="color:#96b5b4;">in_child_scope</span><span style="color:#c0c5ce;">(|</span><span style="color:#bf616a;">bindings</span><span style="color:#c0c5ce;">| {
+    bindings.</span><span style="color:#96b5b4;">insert</span><span style="color:#c0c5ce;">(name.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">(), nnvar_type);
+    </span><span style="color:#96b5b4;">check_expr</span><span style="color:#c0c5ce;">(engine, bindings, ok_expr)
+})?;
+</span></code></pre>
+<p>我们在原始绑定环境中对空分支进行类型检查，其中变量的类型是未精炼的 <code>lhs_type</code>。我们<em>可以</em>在这里把它的类型细化为普通的 <code>null</code>，但是没有实际意义，因为如果变量在某一点上确定为空，cubiml 不会让你做任何事情。只有确定不为空才是真正有用的。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> else_type = </span><span style="color:#96b5b4;">check_expr</span><span style="color:#c0c5ce;">(engine, bindings, else_expr)?;
+</span></code></pre>
+<p>最后，像往常一样，通过创建流约束到新临时变量，将两个分支的结果类型“联合起来”，然后返回联合类型。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#b48ead;">let </span><span style="color:#c0c5ce;">(merged, merged_bound) = engine.</span><span style="color:#96b5b4;">var</span><span style="color:#c0c5ce;">();
+engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(ok_type, merged_bound)?;
+engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(else_type, merged_bound)?;
+</span><span style="color:#b48ead;">return </span><span style="color:#c0c5ce;">Ok(merged);
+</span></code></pre><h3 id="chu-li-duo-tai">处理多态</h3>
+<p>上面的代码大部分都是可行的，但是有一个问题。当在现有的语言构造中添加特例行为时，必须确保这样做不会随机破坏不相关的代码。不幸的是，上面的实现有可能会破坏多态代码。考虑下面的例子：</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#b48ead;">let </span><span style="color:#bf616a;">id </span><span style="color:#c0c5ce;">= fun x -&gt; x;
+
+</span><span style="color:#b48ead;">if</span><span style="color:#c0c5ce;"> id != null </span><span style="color:#b48ead;">then
+    let</span><span style="color:#c0c5ce;"> _ = (id </span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">) + </span><span style="color:#d08770;">3 </span><span style="color:#b48ead;">in
+            </span><span style="color:#c0c5ce;">(id &quot;</span><span style="color:#a3be8c;">x</span><span style="color:#c0c5ce;">&quot;) ^ &quot;</span><span style="color:#a3be8c;">y</span><span style="color:#c0c5ce;">&quot;
+</span><span style="color:#b48ead;">else </span><span style="color:#c0c5ce;">{}
+</span></code></pre>
+<p>上面的代码用多个不兼容的类型调用 <code>id</code>。不过，由于有了 let 多态性，它应该还能工作，事实上，如果没有特殊情况下的空检查行为，它确实能工作。遗憾的是，上述空检查的实现神奇地将环境中 <code>id</code> 的多态类型方案替换成了<em>单态</em>精炼类型，导致了虚假的类型错误：</p>
+<pre style="background-color:#2b303b;">
+<code><span style="color:#c0c5ce;">TypeError: Value is required to be a integer here,
+
+if id != null then
+    let _ = (id 1) + 3 in
+            ^~~~~~
+            (id &quot;x&quot;) ^ &quot;y&quot;
+else {}
+But that value may be a string originating here.
+if id != null then
+    let _ = (id 1) + 3 in
+            (id &quot;x&quot;) ^ &quot;y&quot;
+                ^~~
+else {}
+</span></code></pre>
+<p>感谢上周实现值限制时的懒惰，这很容易解决。由于只对函数定义进行泛化，我们知道多态类型方案将始终代表函数类型，因此是非空的。因此，可以安全地简单跳过这种情况，根本不用费心去尝试精炼类型。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#b48ead;">if let </span><span style="color:#c0c5ce;">Some(scheme) = bindings.</span><span style="color:#96b5b4;">get</span><span style="color:#c0c5ce;">(name.</span><span style="color:#96b5b4;">as_str</span><span style="color:#c0c5ce;">()) {
+    </span><span style="color:#b48ead;">if let </span><span style="color:#c0c5ce;">Scheme::Mono(lhs_type) = scheme {
+        </span><span style="color:#65737e;">// same code as before...
+    </span><span style="color:#c0c5ce;">}
+}
+</span></code></pre>
+<p>cubiml 实现只有当 <code>foo</code> 在当前绑定中具有单态类型时，才会为 <code>if foo != null then ...</code> 执行空检查。我们可以摆脱这种情况，因为值限制的过于保守的实现意味着多态类型方案永远只是函数类型。</p>
+<p>然而，如果你实现<em>全</em>值限制，类型方案可以表示任意类型，有可能包括空值，所以你也必须多态地进行空检查。如果你使用推荐的优化方法来实现 let 多态，即预先计算类型图，然后根据需要复制该图，那么这只是用相同的预计算类型图创建<em>新</em>类型方案的问题，除了在图中添加了空检查节点。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#65737e;">// Handle conditions of the form foo == null and foo != null specially
+</span><span style="color:#b48ead;">if let</span><span style="color:#c0c5ce;"> BinOp((lhs, _), (rhs, _), ast::OpType::AnyCmp, op, ..) = &amp;**cond_expr {
+    </span><span style="color:#b48ead;">if let</span><span style="color:#c0c5ce;"> Variable((name, _)) = &amp;**lhs {
+        </span><span style="color:#b48ead;">if let</span><span style="color:#c0c5ce;"> Literal(ast::Literal::Null, ..) = **rhs {
+            </span><span style="color:#b48ead;">if let </span><span style="color:#c0c5ce;">Some(scheme) = bindings.</span><span style="color:#96b5b4;">get</span><span style="color:#c0c5ce;">(name.</span><span style="color:#96b5b4;">as_str</span><span style="color:#c0c5ce;">()) {
+                </span><span style="color:#b48ead;">if let </span><span style="color:#c0c5ce;">Scheme::Mono(lhs_type) = scheme {
+                    </span><span style="color:#65737e;">// Flip order of branches if they wrote if foo == null instead of !=
+                    </span><span style="color:#b48ead;">let </span><span style="color:#c0c5ce;">(ok_expr, else_expr) = </span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> op {
+                        ast::Op::Neq =&gt; (then_expr, else_expr),
+                        ast::Op::Eq =&gt; (else_expr, then_expr),
+                        _ =&gt; unreachable!(),
+                    };
+
+                    </span><span style="color:#b48ead;">let </span><span style="color:#c0c5ce;">(nnvar_type, nnvar_bound) = engine.</span><span style="color:#96b5b4;">var</span><span style="color:#c0c5ce;">();
+                    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> bound = engine.</span><span style="color:#96b5b4;">null_check_use</span><span style="color:#c0c5ce;">(nnvar_bound, *span);
+                    engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(*lhs_type, bound)?;
+
+                    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> ok_type = bindings.</span><span style="color:#96b5b4;">in_child_scope</span><span style="color:#c0c5ce;">(|</span><span style="color:#bf616a;">bindings</span><span style="color:#c0c5ce;">| {
+                        bindings.</span><span style="color:#96b5b4;">insert</span><span style="color:#c0c5ce;">(name.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">(), nnvar_type);
+                        </span><span style="color:#96b5b4;">check_expr</span><span style="color:#c0c5ce;">(engine, bindings, ok_expr)
+                    })?;
+                    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> else_type = </span><span style="color:#96b5b4;">check_expr</span><span style="color:#c0c5ce;">(engine, bindings, else_expr)?;
+
+                    </span><span style="color:#b48ead;">let </span><span style="color:#c0c5ce;">(merged, merged_bound) = engine.</span><span style="color:#96b5b4;">var</span><span style="color:#c0c5ce;">();
+                    engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(ok_type, merged_bound)?;
+                    engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(else_type, merged_bound)?;
+                    </span><span style="color:#b48ead;">return </span><span style="color:#c0c5ce;">Ok(merged);
+                }
+            }
+        }
+    }
+}
+</span></code></pre>
+<p>以上是完整的、修复后的代码版本。它非常丑陋，但对于演示目的来说已经足够好了。如果你决定在你的语言中更广泛地使用流类型，你将需要重构一些东西，以便更干净地进行检查，因为像这样的临时插入很快就会堆积起来，并开始导致错误。理想情况下，你将能够将你的流类型实现与处理模式匹配的代码统一起来，因为它们在引擎盖下做的基本上是同样的事情。</p>
+<p><a href="/blog/subtype-inference-by-example-part-13-conditional-flow-types-and-type-level-computation/">下周</a>，我们将通过向类型检查器（也就是存在变量）添加条件流边来进一步推动类型系统，并看看如何在编译时在类型系统中进行任意计算。</p>
+
+    </div>
+
+
+</article>
+
+
+        </main>
+        <footer>
+            <p>
+                © 2021 firecodelab.com
+            </p>
+            <p>
+                
+                
+            </p>
+        </footer>
+    </div>
+</body>
+</html>

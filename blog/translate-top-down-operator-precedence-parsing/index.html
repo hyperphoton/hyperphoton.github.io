@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="zh-cn">
+<head>
+    <meta charset="utf-8">
+    <meta name="HandheldFriendly" content="True">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="referrer" content="no-referrer-when-downgrade">
+
+    <title>[译]自上而下的运算符优先解析</title>
+    <meta name="description" content="">
+
+    <link rel="stylesheet" href="https:&#x2F;&#x2F;firecodelab.com&#x2F;main.css">
+
+    
+
+    
+    
+</head>
+<body>
+    <a class="skip-main" href="#main">Skip to content</a>
+    <div class="container">
+        <header>
+            <h1 class="site-header">
+                <a href="https:&#x2F;&#x2F;firecodelab.com">Fire Code</a>
+            </h1>
+            <nav>
+                
+                
+                
+                <a  href="&#x2F;blog&#x2F;">博客</a>
+                
+                
+                <a  href="&#x2F;about&#x2F;">关于</a>
+                
+                
+            </nav>
+        </header>
+        <main id="main" tabindex="-1">
+            
+
+<article class="post">
+    <header>
+        <h1>[译]自上而下的运算符优先解析</h1>
+    </header>
+
+    
+    <div class="article-info">
+        
+        <div class="article-date">2021-03-31</div>
+        
+        <div class="article-taxonomies">
+            
+                <ul class="article-tags">
+                    
+                    <li><a href="https://firecodelab.com/tags/translate/">#translate</a></li>
+                    
+                    <li><a href="https://firecodelab.com/tags/compiler/">#compiler</a></li>
+                    
+                    <li><a href="https://firecodelab.com/tags/tdop/">#tdop</a></li>
+                    
+                </ul>
+            
+        </div>
+        
+        <div class="article-original">[<a href="https:&#x2F;&#x2F;eli.thegreenplace.net&#x2F;2010&#x2F;01&#x2F;02&#x2F;top-down-operator-precedence-parsing" target="_blank">view original</a>]</div>
+        
+    </div>
+
+
+    <div class="content">
+        <h3 id="jie-shao">介绍</h3>
+<p>递归下降解析器一直是我感兴趣的，在过去的一年半时间里，我写了几篇关于这个主题的文章。下面是按时间顺序排列的：</p>
+<ul>
+<li><a href="http://eli.thegreenplace.net/2008/09/26/recursive-descent-ll-and-predictive-parsers/">递归下降，LL 和预测性解析器</a></li>
+<li><a href="http://eli.thegreenplace.net/2009/03/14/some-problems-of-recursive-descent-parsers/">递归下降解析器的一些问题</a></li>
+<li><a href="http://eli.thegreenplace.net/2009/03/20/a-recursive-descent-parser-with-an-infix-expression-evaluator/">一个带有中缀表达式求值器的递归下降解析器</a></li>
+</ul>
+<p>第三篇文章介绍了一种将 RD 解析与不同的算法结合起来解析表达式的方法，以达到更好的效果。这种方法在现实世界中实际使用，例如 GCC 和 Parrot 中(<a href="http://en.wikipedia.org/wiki/Operator-precedence_parser">来源</a>)。</p>
+<p>1973年，<a href="http://en.wikipedia.org/wiki/Vaughan_Pratt">Vaughan Pratt</a> 发现了另一种解析算法。称为<em>自上而下运算符优先</em>，它与修改的 RD 解析器有一些共同点，但承诺简化代码，并提供更好的性能。最近它又被 Douglas Crockford 在<a href="http://javascript.crockford.com/tdop/tdop.html">他的文章</a>中普及，并被他在 <a href="http://www.jslint.com/">JSLint</a> 中用来解析 JavaScript。</p>
+<p>我在<a href="http://eli.thegreenplace.net/2007/09/28/book-review-beautiful-code-edited-by-andy-oram-greg-wilson/">美丽的代码</a>一书中遇到了 Crockford 的文章，但发现它很难理解。我可以跟着代码走，但很难理解<em>为什么</em>这些会工作。最近，我又对这个话题产生了兴趣，尝试着再读了一次文章，结果又一次陷入了困境。最后，通过阅读 Pratt 的原论文和 Frederick Lundh 的优秀的<a href="http://effbot.org/zone/simple-top-down-parsing.htm">基于 Python 的作品</a><a name="id1">[1]</a>，我理解了这个算法。</p>
+<p>所以这篇文章是我通常的尝试，向自己解释这个主题，确保当我在几个月后忘记它的工作原理时，有一个简单的方法来回忆。</p>
+<h3 id="ji-ben-yuan-li">基本原理</h3>
+<p>自上而下的运算符优先解析（以下简称 TDOP）基于几个基本原则：</p>
+<ul>
+<li>一个“绑定力”机制来处理优先级。</li>
+<li>一种手段，根据标记相对于其邻居的位置 - 前缀或中缀 - 来实现标记的不同功能。</li>
+<li>与将语义动作与语法规则（BNF）相关联的传统 RD 相反，TDOP 将其与标记相关联。</li>
+</ul>
+<h4 id="bang-ding-li">绑定力</h4>
+<p>运算符优先级和结合性是解析技术需要处理的一个基本问题。TDOP 通过给它解析的每个标记分配一个“绑定力”来处理这个问题。</p>
+<p>考虑一个子串 AEB，其中 A 取右参数，B 取左参数，E 是表达式。E 是与 A 关联还是与 B 关联？我们为每个运算符定义了一个数字<strong>绑定力</strong>。<strong>具有较高绑定力的运算符“获胜” - 与 E 相关联</strong>。让我们检查下这个表达式：</p>
+<pre style="background-color:#2b303b;">
+<code class="language-python" data-lang="python"><span style="color:#d08770;">1 </span><span style="color:#c0c5ce;">+ </span><span style="color:#d08770;">2 </span><span style="color:#c0c5ce;">* </span><span style="color:#d08770;">4
+</span></code></pre>
+<p>这里再次列出，标识出了 A，E，B：</p>
+<pre style="background-color:#2b303b;">
+<code class="language-python" data-lang="python"><span style="color:#d08770;">1 </span><span style="color:#c0c5ce;">+ </span><span style="color:#d08770;">2 </span><span style="color:#c0c5ce;">* </span><span style="color:#d08770;">4
+  </span><span style="color:#c0c5ce;">^ ^ ^
+  A E B
+</span></code></pre>
+<p>如果想表达乘法比加法有更高优先级的惯例，我们定义 * 的绑定力（bp）为 20，+ 的绑定力为 10（数字是任意的，重要的是 bp(*) &gt; bp(+)）。因此，根据上面的定义，2 将与 * 关联在一起，因为它的绑定力高于 + 的绑定力。</p>
+<h4 id="qian-zhui-he-zhong-zhui-yun-suan-fu">前缀和中缀运算符</h4>
+<p>为了解析传统的<a href="http://en.wikipedia.org/wiki/Infix_notation">中缀符号</a>表达式语言<a name="id2">[2]</a>，我们需要区分标记的前缀形式和中缀形式。最好的例子是减号运算符（-）。在中缀形式中，它是减法：</p>
+<pre style="background-color:#2b303b;">
+<code class="language-python" data-lang="python"><span style="color:#c0c5ce;">a = b - c  </span><span style="color:#65737e;"># a 是 b 减 c
+</span></code></pre>
+<p>在前缀形式中，它是取反。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-python" data-lang="python"><span style="color:#c0c5ce;">a = -b   </span><span style="color:#65737e;"># b 和 a 大小相同但符号相反
+</span></code></pre>
+<p>为了适应这种差异，TDOP 允许对前缀和中缀语境中的标记进行不同的处理。在 TDOP 术语中，作为前缀标记的处理器称为 <strong>nud</strong>（代表“空符号”），作为后缀标记的处理器称为 <strong>led</strong>（代表 &quot;左符号&quot;）。</p>
+<h3 id="tdop-suan-fa">TDOP 算法</h3>
+<p>这是一个基本的 TDOP 解析器：</p>
+<pre style="background-color:#2b303b;">
+<code class="language-python" data-lang="python"><span style="color:#b48ead;">def </span><span style="color:#8fa1b3;">expression</span><span style="color:#c0c5ce;">(</span><span style="color:#bf616a;">rbp</span><span style="color:#c0c5ce;">=</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">):
+    </span><span style="color:#b48ead;">global </span><span style="color:#c0c5ce;">token
+    t = token
+    token = </span><span style="color:#96b5b4;">next</span><span style="color:#c0c5ce;">()
+    left = t.</span><span style="color:#bf616a;">nud</span><span style="color:#c0c5ce;">()
+    </span><span style="color:#b48ead;">while </span><span style="color:#c0c5ce;">rbp &lt; token.lbp:
+        t = token
+        token = </span><span style="color:#96b5b4;">next</span><span style="color:#c0c5ce;">()
+        left = t.</span><span style="color:#bf616a;">led</span><span style="color:#c0c5ce;">(left)
+
+    </span><span style="color:#b48ead;">return </span><span style="color:#c0c5ce;">left
+
+</span><span style="color:#b48ead;">class </span><span style="color:#ebcb8b;">literal_token</span><span style="color:#eff1f5;">(</span><span style="color:#a3be8c;">object</span><span style="color:#eff1f5;">):
+    </span><span style="color:#b48ead;">def </span><span style="color:#96b5b4;">__init__</span><span style="color:#c0c5ce;">(</span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">value</span><span style="color:#c0c5ce;">):
+        </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.value = </span><span style="color:#bf616a;">int</span><span style="color:#c0c5ce;">(value)
+    </span><span style="color:#b48ead;">def </span><span style="color:#8fa1b3;">nud</span><span style="color:#c0c5ce;">(</span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">):
+        </span><span style="color:#b48ead;">return </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.value
+
+</span><span style="color:#b48ead;">class </span><span style="color:#ebcb8b;">operator_add_token</span><span style="color:#eff1f5;">(</span><span style="color:#a3be8c;">object</span><span style="color:#eff1f5;">):
+    </span><span style="color:#c0c5ce;">lbp = </span><span style="color:#d08770;">10
+    </span><span style="color:#b48ead;">def </span><span style="color:#8fa1b3;">led</span><span style="color:#c0c5ce;">(</span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">left</span><span style="color:#c0c5ce;">):
+        right = </span><span style="color:#bf616a;">expression</span><span style="color:#c0c5ce;">(</span><span style="color:#d08770;">10</span><span style="color:#c0c5ce;">)
+        </span><span style="color:#b48ead;">return </span><span style="color:#c0c5ce;">left + right
+
+</span><span style="color:#b48ead;">class </span><span style="color:#ebcb8b;">operator_mul_token</span><span style="color:#eff1f5;">(</span><span style="color:#a3be8c;">object</span><span style="color:#eff1f5;">):
+    </span><span style="color:#c0c5ce;">lbp = </span><span style="color:#d08770;">20
+    </span><span style="color:#b48ead;">def </span><span style="color:#8fa1b3;">led</span><span style="color:#c0c5ce;">(</span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">left</span><span style="color:#c0c5ce;">):
+        </span><span style="color:#b48ead;">return </span><span style="color:#c0c5ce;">left * </span><span style="color:#bf616a;">expression</span><span style="color:#c0c5ce;">(</span><span style="color:#d08770;">20</span><span style="color:#c0c5ce;">)
+
+</span><span style="color:#b48ead;">class </span><span style="color:#ebcb8b;">end_token</span><span style="color:#eff1f5;">(</span><span style="color:#a3be8c;">object</span><span style="color:#eff1f5;">):
+    </span><span style="color:#c0c5ce;">lbp = </span><span style="color:#d08770;">0
+</span></code></pre>
+<p>我们只需要增加一些支持代码，包括一个简单的分词器<a name="id3">[3]</a>和解析器驱动：</p>
+<pre style="background-color:#2b303b;">
+<code class="language-python" data-lang="python"><span style="color:#b48ead;">import </span><span style="color:#c0c5ce;">re
+token_pat = re.</span><span style="color:#bf616a;">compile</span><span style="color:#c0c5ce;">(&quot;</span><span style="color:#a3be8c;">\s*(?:(\d+)|(.))</span><span style="color:#c0c5ce;">&quot;)
+
+</span><span style="color:#b48ead;">def </span><span style="color:#8fa1b3;">tokenize</span><span style="color:#c0c5ce;">(</span><span style="color:#bf616a;">program</span><span style="color:#c0c5ce;">):
+    </span><span style="color:#b48ead;">for </span><span style="color:#c0c5ce;">number, operator </span><span style="color:#b48ead;">in </span><span style="color:#c0c5ce;">token_pat.</span><span style="color:#bf616a;">findall</span><span style="color:#c0c5ce;">(program):
+        </span><span style="color:#b48ead;">if </span><span style="color:#c0c5ce;">number:
+            </span><span style="color:#b48ead;">yield </span><span style="color:#bf616a;">literal_token</span><span style="color:#c0c5ce;">(number)
+        </span><span style="color:#b48ead;">elif </span><span style="color:#c0c5ce;">operator == &quot;</span><span style="color:#a3be8c;">+</span><span style="color:#c0c5ce;">&quot;:
+            </span><span style="color:#b48ead;">yield </span><span style="color:#bf616a;">operator_add_token</span><span style="color:#c0c5ce;">()
+        </span><span style="color:#b48ead;">elif </span><span style="color:#c0c5ce;">operator == &quot;</span><span style="color:#a3be8c;">*</span><span style="color:#c0c5ce;">&quot;:
+            </span><span style="color:#b48ead;">yield </span><span style="color:#bf616a;">operator_mul_token</span><span style="color:#c0c5ce;">()
+        </span><span style="color:#b48ead;">else</span><span style="color:#c0c5ce;">:
+            </span><span style="color:#b48ead;">raise </span><span style="color:#bf616a;">SyntaxError</span><span style="color:#c0c5ce;">(&#39;</span><span style="color:#a3be8c;">unknown operator: </span><span style="color:#d08770;">%s</span><span style="color:#c0c5ce;">&#39;, operator)
+    </span><span style="color:#b48ead;">yield </span><span style="color:#bf616a;">end_token</span><span style="color:#c0c5ce;">()
+
+</span><span style="color:#b48ead;">def </span><span style="color:#8fa1b3;">parse</span><span style="color:#c0c5ce;">(</span><span style="color:#bf616a;">program</span><span style="color:#c0c5ce;">):
+    </span><span style="color:#b48ead;">global </span><span style="color:#c0c5ce;">token, </span><span style="color:#96b5b4;">next
+    next </span><span style="color:#c0c5ce;">= </span><span style="color:#bf616a;">tokenize</span><span style="color:#c0c5ce;">(program).next
+    token = </span><span style="color:#96b5b4;">next</span><span style="color:#c0c5ce;">()
+    </span><span style="color:#b48ead;">return </span><span style="color:#bf616a;">expression</span><span style="color:#c0c5ce;">()
+</span></code></pre>
+<p>我们有了完整的解析器和求值器，用于处理涉及加法和乘法的算术表达式。</p>
+<p>现在来看看它的实际工作原理。注意，标记类有几个属性（不是所有类都有所有类型的属性）。</p>
+<ul>
+<li>lbp - 运算符的左绑定力。对于中缀运算符，它告诉我们运算符与它左参数的绑定力有多强。</li>
+<li>nud - 前缀处理器。在这个简单的解析器中，它只为字面量（数字）存在。</li>
+<li>led - 中缀处理器。</li>
+</ul>
+<p>在这里，启蒙的关键是注意表达式函数是如何工作的，以及运算符处理器如何调用它，传递一个绑定力。</p>
+<p>当表达式被调用时，它提供 rbp - 调用它的运算符的右绑定力。它消费标记，直到遇到一个左绑定力等于或低于 rbp 的标记。具体来说，就是在返回调用它的运算符之前，它收集所有绑定在一起的标记。</p>
+<p>运算符的处理器调用表达式来处理它们的参数，为它提供它们的绑定力，以确保它从输入中获得恰到好处的标记。</p>
+<p>例如，我们来看看这个解析器是如何处理表达式的：</p>
+<pre style="background-color:#2b303b;">
+<code class="language-python" data-lang="python"><span style="color:#d08770;">3 </span><span style="color:#c0c5ce;">+ </span><span style="color:#d08770;">1 </span><span style="color:#c0c5ce;">* </span><span style="color:#d08770;">2 </span><span style="color:#c0c5ce;">* </span><span style="color:#d08770;">4 </span><span style="color:#c0c5ce;">+ </span><span style="color:#d08770;">5
+</span></code></pre>
+<p>下面是解析器函数在解析这个表达式时的调用追踪：</p>
+<pre style="background-color:#2b303b;">
+<code><span style="color:#c0c5ce;">&lt;&lt;expression with rbp 0&gt;&gt;
+    &lt;&lt;literal nud = 3&gt;&gt;
+    &lt;&lt;led of &quot;+&quot;&gt;&gt;
+    &lt;&lt;expression with rbp 10&gt;&gt;
+       &lt;&lt;literal nud = 1&gt;&gt;
+       &lt;&lt;led of &quot;*&quot;&gt;&gt;
+       &lt;&lt;expression with rbp 20&gt;&gt;
+          &lt;&lt;literal nud = 2&gt;&gt;
+       &lt;&lt;led of &quot;*&quot;&gt;&gt;
+       &lt;&lt;expression with rbp 20&gt;&gt;
+          &lt;&lt;literal nud = 4&gt;&gt;
+    &lt;&lt;led of &quot;+&quot;&gt;&gt;
+    &lt;&lt;expression with rbp 10&gt;&gt;
+       &lt;&lt;literal nud = 5&gt;&gt;
+</span></code></pre>
+<p>下图显示了不同递归层上对表达式的调用：</p>
+<p><img src="/blog/images/tdop_expr.png" alt="" /></p>
+<p>箭头显示了每次执行表达式所依据的标记，上方的数字是这次调用赋给表达式的 rbp。</p>
+<p>除了跨越整个输入的初始调用（带有 rbp=0）外，表达式在每个运算符之后被（其 led 处理器）调用，以收集右边的参数。如图所示，绑定力机制确保表达式不会“走得太远” - 只在调用运算符的优先级允许的范围内。理解这个的最好的地方是第一个 + 之后的长箭头，它收集所有的乘法项（由于 * 的优先级较高，它们需要被组合在一起），并在遇到第二个 + 之前返回（当优先级不再高于其 rbp 时）。</p>
+<p>另一种看待方式是：在解析器执行的任何一点上，每个优先级都有一个表达式实例在那一刻是活跃的。这个实例等待着更高优先级实例的结果，并一直进行下去，直到需要停止自己，并将结果返回给它的调用者。</p>
+<p>如果你理解了这个例子，你就理解了 TDOP 解析。其余所有内容其实都是相同的。</p>
+<h4 id="zeng-qiang-jie-xi-qi">增强解析器</h4>
+<p>到目前为止，所介绍的解析器是非常初级的，所以我们来增强它，以更加实际。首先，一元运算符呢？</p>
+<p>正如在前缀和中缀运算符一节中提到的，TDOP 对两者进行了明确的区分，将其编码在 nud 和 led 方法的差异中。添加减法运算符处理器<a name="id4">[4]</a>：</p>
+<pre style="background-color:#2b303b;">
+<code class="language-python" data-lang="python"><span style="color:#b48ead;">class </span><span style="color:#ebcb8b;">operator_sub_token</span><span style="color:#eff1f5;">(</span><span style="color:#a3be8c;">object</span><span style="color:#eff1f5;">):
+    </span><span style="color:#c0c5ce;">lbp = </span><span style="color:#d08770;">10
+    </span><span style="color:#b48ead;">def </span><span style="color:#8fa1b3;">nud</span><span style="color:#c0c5ce;">(</span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">):
+        </span><span style="color:#b48ead;">return </span><span style="color:#c0c5ce;">-</span><span style="color:#bf616a;">expression</span><span style="color:#c0c5ce;">(</span><span style="color:#d08770;">100</span><span style="color:#c0c5ce;">)
+    </span><span style="color:#b48ead;">def </span><span style="color:#8fa1b3;">led</span><span style="color:#c0c5ce;">(</span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">left</span><span style="color:#c0c5ce;">):
+        </span><span style="color:#b48ead;">return </span><span style="color:#c0c5ce;">left - </span><span style="color:#bf616a;">expression</span><span style="color:#c0c5ce;">(</span><span style="color:#d08770;">10</span><span style="color:#c0c5ce;">)
+</span></code></pre>
+<p>nud 处理减号的一元（前缀）形式，它没有左参数（因为是前缀），对其右参数进行取反。传递到表达式中的绑定能力很高，因为前缀减号有很高的优先级（比乘法高）。led 处理中缀情况类似于 + 和 * 的处理器。</p>
+<p>现在我们可以这样处理表达式：</p>
+<pre style="background-color:#2b303b;">
+<code class="language-python" data-lang="python"><span style="color:#d08770;">3 </span><span style="color:#c0c5ce;">- </span><span style="color:#d08770;">2 </span><span style="color:#c0c5ce;">+ </span><span style="color:#d08770;">4 </span><span style="color:#c0c5ce;">* -</span><span style="color:#d08770;">5
+</span></code></pre>
+<p>并得到一个正确的结果（-19）。</p>
+<p>那右关联运算符呢？让我们来实现乘方（使用插入符号 ^）。为了让操作右关联，我们希望解析器将后续的乘方操作符视为第一个操作符的子表达式。我们可以通过在乘方处理器中调用表达式来实现，表达式的 rbp 低于乘方的 lbp。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-python" data-lang="python"><span style="color:#b48ead;">class </span><span style="color:#ebcb8b;">operator_pow_token</span><span style="color:#eff1f5;">(</span><span style="color:#a3be8c;">object</span><span style="color:#eff1f5;">):
+    </span><span style="color:#c0c5ce;">lbp = </span><span style="color:#d08770;">30
+    </span><span style="color:#b48ead;">def </span><span style="color:#8fa1b3;">led</span><span style="color:#c0c5ce;">(</span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">left</span><span style="color:#c0c5ce;">):
+        </span><span style="color:#b48ead;">return </span><span style="color:#c0c5ce;">left ** </span><span style="color:#bf616a;">expression</span><span style="color:#c0c5ce;">(</span><span style="color:#d08770;">30 </span><span style="color:#c0c5ce;">- </span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">)
+</span></code></pre>
+<p>当表达式到了循环中的下一个 ^ 时，会发现仍然 rbp &lt; token.lbp，不会马上返回结果，而是先收集子表达式的值。</p>
+<p>那用括号分组呢？由于每个标记都可以在 TDOP 中执行动作，所以可以通过给 ( 标记添加动作来轻松处理。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-python" data-lang="python"><span style="color:#b48ead;">class </span><span style="color:#ebcb8b;">operator_lparen_token</span><span style="color:#eff1f5;">(</span><span style="color:#a3be8c;">object</span><span style="color:#eff1f5;">):
+    </span><span style="color:#c0c5ce;">lbp = </span><span style="color:#d08770;">0
+    </span><span style="color:#b48ead;">def </span><span style="color:#8fa1b3;">nud</span><span style="color:#c0c5ce;">(</span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">):
+        expr = </span><span style="color:#bf616a;">expression</span><span style="color:#c0c5ce;">()
+        </span><span style="color:#bf616a;">match</span><span style="color:#c0c5ce;">(operator_rparen_token)
+        </span><span style="color:#b48ead;">return </span><span style="color:#c0c5ce;">expr
+
+</span><span style="color:#b48ead;">class </span><span style="color:#ebcb8b;">operator_rparen_token</span><span style="color:#eff1f5;">(</span><span style="color:#a3be8c;">object</span><span style="color:#eff1f5;">):
+    </span><span style="color:#c0c5ce;">lbp = </span><span style="color:#d08770;">0
+</span></code></pre>
+<p>其中 match 是通常的 RD 基元：</p>
+<pre style="background-color:#2b303b;">
+<code class="language-python" data-lang="python"><span style="color:#b48ead;">def </span><span style="color:#8fa1b3;">match</span><span style="color:#c0c5ce;">(</span><span style="color:#bf616a;">tok</span><span style="color:#c0c5ce;">=</span><span style="color:#d08770;">None</span><span style="color:#c0c5ce;">):
+    </span><span style="color:#b48ead;">global </span><span style="color:#c0c5ce;">token
+    </span><span style="color:#b48ead;">if </span><span style="color:#c0c5ce;">tok and tok != </span><span style="color:#96b5b4;">type</span><span style="color:#c0c5ce;">(token):
+        </span><span style="color:#b48ead;">raise </span><span style="color:#bf616a;">SyntaxError</span><span style="color:#c0c5ce;">(&#39;</span><span style="color:#a3be8c;">Expected </span><span style="color:#d08770;">%s</span><span style="color:#c0c5ce;">&#39; % tok)
+    token = </span><span style="color:#96b5b4;">next</span><span style="color:#c0c5ce;">()
+</span></code></pre>
+<p>请注意， ( 的 lbp=0，意味着它不与左边的任何标记绑定。它被当作一个前缀，它的 nud 在 ( 之后收集一个表达式，直到遇到 ) （它停止表达式解析器，因为它也是 lbp=0）。然后它消耗掉  )  本身，并返回表达式的结果。<a name="id5">[5]</a></p>
+<p>这是完整的解析器代码，处理加、减、乘、除、乘方和括号分组：</p>
+<pre style="background-color:#2b303b;">
+<code class="language-python" data-lang="python"><span style="color:#b48ead;">import </span><span style="color:#c0c5ce;">re
+
+token_pat = re.</span><span style="color:#bf616a;">compile</span><span style="color:#c0c5ce;">(&quot;</span><span style="color:#a3be8c;">\s*(?:(\d+)|(.))</span><span style="color:#c0c5ce;">&quot;)
+
+</span><span style="color:#b48ead;">def </span><span style="color:#8fa1b3;">tokenize</span><span style="color:#c0c5ce;">(</span><span style="color:#bf616a;">program</span><span style="color:#c0c5ce;">):
+    </span><span style="color:#b48ead;">for </span><span style="color:#c0c5ce;">number, operator </span><span style="color:#b48ead;">in </span><span style="color:#c0c5ce;">token_pat.</span><span style="color:#bf616a;">findall</span><span style="color:#c0c5ce;">(program):
+        </span><span style="color:#b48ead;">if </span><span style="color:#c0c5ce;">number:
+            </span><span style="color:#b48ead;">yield </span><span style="color:#bf616a;">literal_token</span><span style="color:#c0c5ce;">(number)
+        </span><span style="color:#b48ead;">elif </span><span style="color:#c0c5ce;">operator == &quot;</span><span style="color:#a3be8c;">+</span><span style="color:#c0c5ce;">&quot;:
+            </span><span style="color:#b48ead;">yield </span><span style="color:#bf616a;">operator_add_token</span><span style="color:#c0c5ce;">()
+        </span><span style="color:#b48ead;">elif </span><span style="color:#c0c5ce;">operator == &quot;</span><span style="color:#a3be8c;">-</span><span style="color:#c0c5ce;">&quot;:
+            </span><span style="color:#b48ead;">yield </span><span style="color:#bf616a;">operator_sub_token</span><span style="color:#c0c5ce;">()
+        </span><span style="color:#b48ead;">elif </span><span style="color:#c0c5ce;">operator == &quot;</span><span style="color:#a3be8c;">*</span><span style="color:#c0c5ce;">&quot;:
+            </span><span style="color:#b48ead;">yield </span><span style="color:#bf616a;">operator_mul_token</span><span style="color:#c0c5ce;">()
+        </span><span style="color:#b48ead;">elif </span><span style="color:#c0c5ce;">operator == &quot;</span><span style="color:#a3be8c;">/</span><span style="color:#c0c5ce;">&quot;:
+            </span><span style="color:#b48ead;">yield </span><span style="color:#bf616a;">operator_div_token</span><span style="color:#c0c5ce;">()
+        </span><span style="color:#b48ead;">elif </span><span style="color:#c0c5ce;">operator == &quot;</span><span style="color:#a3be8c;">^</span><span style="color:#c0c5ce;">&quot;:
+            </span><span style="color:#b48ead;">yield </span><span style="color:#bf616a;">operator_pow_token</span><span style="color:#c0c5ce;">()
+        </span><span style="color:#b48ead;">elif </span><span style="color:#c0c5ce;">operator == &#39;</span><span style="color:#a3be8c;">(</span><span style="color:#c0c5ce;">&#39;:
+            </span><span style="color:#b48ead;">yield </span><span style="color:#bf616a;">operator_lparen_token</span><span style="color:#c0c5ce;">()
+        </span><span style="color:#b48ead;">elif </span><span style="color:#c0c5ce;">operator == &#39;</span><span style="color:#a3be8c;">)</span><span style="color:#c0c5ce;">&#39;:
+            </span><span style="color:#b48ead;">yield </span><span style="color:#bf616a;">operator_rparen_token</span><span style="color:#c0c5ce;">()
+        </span><span style="color:#b48ead;">else</span><span style="color:#c0c5ce;">:
+            </span><span style="color:#b48ead;">raise </span><span style="color:#bf616a;">SyntaxError</span><span style="color:#c0c5ce;">(&#39;</span><span style="color:#a3be8c;">unknown operator: </span><span style="color:#d08770;">%s</span><span style="color:#c0c5ce;">&#39;, operator)
+    </span><span style="color:#b48ead;">yield </span><span style="color:#bf616a;">end_token</span><span style="color:#c0c5ce;">()
+
+</span><span style="color:#b48ead;">def </span><span style="color:#8fa1b3;">match</span><span style="color:#c0c5ce;">(</span><span style="color:#bf616a;">tok</span><span style="color:#c0c5ce;">=</span><span style="color:#d08770;">None</span><span style="color:#c0c5ce;">):
+    </span><span style="color:#b48ead;">global </span><span style="color:#c0c5ce;">token
+    </span><span style="color:#b48ead;">if </span><span style="color:#c0c5ce;">tok and tok != </span><span style="color:#96b5b4;">type</span><span style="color:#c0c5ce;">(token):
+        </span><span style="color:#b48ead;">raise </span><span style="color:#bf616a;">SyntaxError</span><span style="color:#c0c5ce;">(&#39;</span><span style="color:#a3be8c;">Expected </span><span style="color:#d08770;">%s</span><span style="color:#c0c5ce;">&#39; % tok)
+    token = </span><span style="color:#96b5b4;">next</span><span style="color:#c0c5ce;">()
+
+</span><span style="color:#b48ead;">def </span><span style="color:#8fa1b3;">parse</span><span style="color:#c0c5ce;">(</span><span style="color:#bf616a;">program</span><span style="color:#c0c5ce;">):
+    </span><span style="color:#b48ead;">global </span><span style="color:#c0c5ce;">token, </span><span style="color:#96b5b4;">next
+    next </span><span style="color:#c0c5ce;">= </span><span style="color:#bf616a;">tokenize</span><span style="color:#c0c5ce;">(program).next
+    token = </span><span style="color:#96b5b4;">next</span><span style="color:#c0c5ce;">()
+    </span><span style="color:#b48ead;">return </span><span style="color:#bf616a;">expression</span><span style="color:#c0c5ce;">()
+
+</span><span style="color:#b48ead;">def </span><span style="color:#8fa1b3;">expression</span><span style="color:#c0c5ce;">(</span><span style="color:#bf616a;">rbp</span><span style="color:#c0c5ce;">=</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">):
+    </span><span style="color:#b48ead;">global </span><span style="color:#c0c5ce;">token
+    t = token
+    token = </span><span style="color:#96b5b4;">next</span><span style="color:#c0c5ce;">()
+    left = t.</span><span style="color:#bf616a;">nud</span><span style="color:#c0c5ce;">()
+    </span><span style="color:#b48ead;">while </span><span style="color:#c0c5ce;">rbp &lt; token.lbp:
+        t = token
+        token = </span><span style="color:#96b5b4;">next</span><span style="color:#c0c5ce;">()
+        left = t.</span><span style="color:#bf616a;">led</span><span style="color:#c0c5ce;">(left)
+    </span><span style="color:#b48ead;">return </span><span style="color:#c0c5ce;">left
+
+</span><span style="color:#b48ead;">class </span><span style="color:#ebcb8b;">literal_token</span><span style="color:#eff1f5;">(</span><span style="color:#a3be8c;">object</span><span style="color:#eff1f5;">):
+    </span><span style="color:#b48ead;">def </span><span style="color:#96b5b4;">__init__</span><span style="color:#c0c5ce;">(</span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">value</span><span style="color:#c0c5ce;">):
+        </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.value = </span><span style="color:#bf616a;">int</span><span style="color:#c0c5ce;">(value)
+    </span><span style="color:#b48ead;">def </span><span style="color:#8fa1b3;">nud</span><span style="color:#c0c5ce;">(</span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">):
+        </span><span style="color:#b48ead;">return </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.value
+
+</span><span style="color:#b48ead;">class </span><span style="color:#ebcb8b;">operator_add_token</span><span style="color:#eff1f5;">(</span><span style="color:#a3be8c;">object</span><span style="color:#eff1f5;">):
+    </span><span style="color:#c0c5ce;">lbp = </span><span style="color:#d08770;">10
+    </span><span style="color:#b48ead;">def </span><span style="color:#8fa1b3;">nud</span><span style="color:#c0c5ce;">(</span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">):
+        </span><span style="color:#b48ead;">return </span><span style="color:#bf616a;">expression</span><span style="color:#c0c5ce;">(</span><span style="color:#d08770;">100</span><span style="color:#c0c5ce;">)
+    </span><span style="color:#b48ead;">def </span><span style="color:#8fa1b3;">led</span><span style="color:#c0c5ce;">(</span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">left</span><span style="color:#c0c5ce;">):
+        right = </span><span style="color:#bf616a;">expression</span><span style="color:#c0c5ce;">(</span><span style="color:#d08770;">10</span><span style="color:#c0c5ce;">)
+        </span><span style="color:#b48ead;">return </span><span style="color:#c0c5ce;">left + right
+
+</span><span style="color:#b48ead;">class </span><span style="color:#ebcb8b;">operator_sub_token</span><span style="color:#eff1f5;">(</span><span style="color:#a3be8c;">object</span><span style="color:#eff1f5;">):
+    </span><span style="color:#c0c5ce;">lbp = </span><span style="color:#d08770;">10
+    </span><span style="color:#b48ead;">def </span><span style="color:#8fa1b3;">nud</span><span style="color:#c0c5ce;">(</span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">):
+        </span><span style="color:#b48ead;">return </span><span style="color:#c0c5ce;">-</span><span style="color:#bf616a;">expression</span><span style="color:#c0c5ce;">(</span><span style="color:#d08770;">100</span><span style="color:#c0c5ce;">)
+    </span><span style="color:#b48ead;">def </span><span style="color:#8fa1b3;">led</span><span style="color:#c0c5ce;">(</span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">left</span><span style="color:#c0c5ce;">):
+        </span><span style="color:#b48ead;">return </span><span style="color:#c0c5ce;">left - </span><span style="color:#bf616a;">expression</span><span style="color:#c0c5ce;">(</span><span style="color:#d08770;">10</span><span style="color:#c0c5ce;">)
+
+</span><span style="color:#b48ead;">class </span><span style="color:#ebcb8b;">operator_mul_token</span><span style="color:#eff1f5;">(</span><span style="color:#a3be8c;">object</span><span style="color:#eff1f5;">):
+    </span><span style="color:#c0c5ce;">lbp = </span><span style="color:#d08770;">20
+    </span><span style="color:#b48ead;">def </span><span style="color:#8fa1b3;">led</span><span style="color:#c0c5ce;">(</span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">left</span><span style="color:#c0c5ce;">):
+        </span><span style="color:#b48ead;">return </span><span style="color:#c0c5ce;">left * </span><span style="color:#bf616a;">expression</span><span style="color:#c0c5ce;">(</span><span style="color:#d08770;">20</span><span style="color:#c0c5ce;">)
+
+</span><span style="color:#b48ead;">class </span><span style="color:#ebcb8b;">operator_div_token</span><span style="color:#eff1f5;">(</span><span style="color:#a3be8c;">object</span><span style="color:#eff1f5;">):
+    </span><span style="color:#c0c5ce;">lbp = </span><span style="color:#d08770;">20
+    </span><span style="color:#b48ead;">def </span><span style="color:#8fa1b3;">led</span><span style="color:#c0c5ce;">(</span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">left</span><span style="color:#c0c5ce;">):
+        </span><span style="color:#b48ead;">return </span><span style="color:#c0c5ce;">left / </span><span style="color:#bf616a;">expression</span><span style="color:#c0c5ce;">(</span><span style="color:#d08770;">20</span><span style="color:#c0c5ce;">)
+
+</span><span style="color:#b48ead;">class </span><span style="color:#ebcb8b;">operator_pow_token</span><span style="color:#eff1f5;">(</span><span style="color:#a3be8c;">object</span><span style="color:#eff1f5;">):
+    </span><span style="color:#c0c5ce;">lbp = </span><span style="color:#d08770;">30
+    </span><span style="color:#b48ead;">def </span><span style="color:#8fa1b3;">led</span><span style="color:#c0c5ce;">(</span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">left</span><span style="color:#c0c5ce;">):
+        </span><span style="color:#b48ead;">return </span><span style="color:#c0c5ce;">left ** </span><span style="color:#bf616a;">expression</span><span style="color:#c0c5ce;">(</span><span style="color:#d08770;">30 </span><span style="color:#c0c5ce;">- </span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">)
+
+</span><span style="color:#b48ead;">class </span><span style="color:#ebcb8b;">operator_lparen_token</span><span style="color:#eff1f5;">(</span><span style="color:#a3be8c;">object</span><span style="color:#eff1f5;">):
+    </span><span style="color:#c0c5ce;">lbp = </span><span style="color:#d08770;">0
+    </span><span style="color:#b48ead;">def </span><span style="color:#8fa1b3;">nud</span><span style="color:#c0c5ce;">(</span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">):
+        expr = </span><span style="color:#bf616a;">expression</span><span style="color:#c0c5ce;">()
+        </span><span style="color:#bf616a;">match</span><span style="color:#c0c5ce;">(operator_rparen_token)
+        </span><span style="color:#b48ead;">return </span><span style="color:#c0c5ce;">expr
+
+</span><span style="color:#b48ead;">class </span><span style="color:#ebcb8b;">operator_rparen_token</span><span style="color:#eff1f5;">(</span><span style="color:#a3be8c;">object</span><span style="color:#eff1f5;">):
+    </span><span style="color:#c0c5ce;">lbp = </span><span style="color:#d08770;">0
+
+</span><span style="color:#b48ead;">class </span><span style="color:#ebcb8b;">end_token</span><span style="color:#eff1f5;">(</span><span style="color:#a3be8c;">object</span><span style="color:#eff1f5;">):
+    </span><span style="color:#c0c5ce;">lbp = </span><span style="color:#d08770;">0
+</span></code></pre>
+<p>示例用法：</p>
+<pre style="background-color:#2b303b;">
+<code class="language-python" data-lang="python"><span style="color:#c0c5ce;">&gt;&gt;&gt; </span><span style="color:#bf616a;">parse</span><span style="color:#c0c5ce;">(&#39;</span><span style="color:#a3be8c;">3 * (2 + -4) ^ 4</span><span style="color:#c0c5ce;">&#39;)
+</span><span style="color:#d08770;">48
+</span></code></pre><h3 id="jie-shu-yu">结束语</h3>
+<p>当人们考虑要实现的解析方法时，通常会在手工编码的 RD 解析器、自动生成的 LL(k) 解析器或者自动生成的 LR 解析器之间进行争论。TDOP 是另一种选择<a name="id6">[6]</a>。它是一种独创的、不寻常的解析方法，可以处理复杂的语法（不限于表达式），相对容易编码，而且速度很快。</p>
+<p>TDOP 之所以快，是因为它不需要深度递归下降来解析表达式 - 无论语法如何，每个标记只需要几次调用。如果你跟踪我在本文中介绍的示例解析器中的标记动作，你会发现平均而言，对于每个标记，<code>expression</code> 和一个 <code>nud</code> 或 <code>led</code> 方法被调用，仅此而已。Frederik Lundh 在他的文章中对比了 TDOP 和其他几种方法的性能，得到了非常有利的结果。</p>
+<hr />
+<p><a href="https://firecodelab.com/blog/translate-top-down-operator-precedence-parsing/#id1">[1]</a> 这也是本文大部分代码的来源 - 所以版权是 Fredrik Lundh 的。</p>
+<p><a href="https://firecodelab.com/blog/translate-top-down-operator-precedence-parsing/#id2">[2]</a> 如 C、Java、Python。一个没有中缀符号的语言的例子是 Lisp，它的表达式是前缀符号。</p>
+<p><a href="https://firecodelab.com/blog/translate-top-down-operator-precedence-parsing/#id3">[3]</a> 这个分词器只识别数字和单字符运算符。</p>
+<p><a href="https://firecodelab.com/blog/translate-top-down-operator-precedence-parsing/#id4">[4]</a> 请注意，为了让解析器能够实际识别 -，应该在分词函数中添加一个适当的调度器 - 这作为练习留给读者。</p>
+<p><a href="https://firecodelab.com/blog/translate-top-down-operator-precedence-parsing/#id5">[5]</a> 测验：左括号也有 led 处理器有用吗？提示：你如何实现函数调用？</p>
+<p><a href="https://firecodelab.com/blog/translate-top-down-operator-precedence-parsing/#id6">[6]</a> 顺便说一下，我不知道在 LL/LR 量表上该把它归类在哪儿？有什么想法吗？</p>
+
+    </div>
+
+
+</article>
+
+
+        </main>
+        <footer>
+            <p>
+                © 2021 firecodelab.com
+            </p>
+            <p>
+                
+                
+            </p>
+        </footer>
+    </div>
+</body>
+</html>

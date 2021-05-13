@@ -1,0 +1,794 @@
+<!DOCTYPE html>
+<html lang="zh-cn">
+<head>
+    <meta charset="utf-8">
+    <meta name="HandheldFriendly" content="True">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="referrer" content="no-referrer-when-downgrade">
+
+    <title>[译]通过例子学子类型推理（十五）：单态类型注释</title>
+    <meta name="description" content="">
+
+    <link rel="stylesheet" href="https:&#x2F;&#x2F;firecodelab.com&#x2F;main.css">
+
+    
+
+    
+    
+</head>
+<body>
+    <a class="skip-main" href="#main">Skip to content</a>
+    <div class="container">
+        <header>
+            <h1 class="site-header">
+                <a href="https:&#x2F;&#x2F;firecodelab.com">Fire Code</a>
+            </h1>
+            <nav>
+                
+                
+                
+                <a  href="&#x2F;blog&#x2F;">博客</a>
+                
+                
+                <a  href="&#x2F;about&#x2F;">关于</a>
+                
+                
+            </nav>
+        </header>
+        <main id="main" tabindex="-1">
+            
+
+<article class="post">
+    <header>
+        <h1>[译]通过例子学子类型推理（十五）：单态类型注释</h1>
+    </header>
+
+    
+    <div class="article-info">
+        
+        <div class="article-date">2021-04-15</div>
+        
+        <div class="article-taxonomies">
+            
+                <ul class="article-tags">
+                    
+                    <li><a href="https://firecodelab.com/tags/translate/">#translate</a></li>
+                    
+                    <li><a href="https://firecodelab.com/tags/compiler/">#compiler</a></li>
+                    
+                    <li><a href="https://firecodelab.com/tags/type-inference/">#type inference</a></li>
+                    
+                </ul>
+            
+        </div>
+        
+        <div class="article-original">[<a href="https:&#x2F;&#x2F;blog.polybdenum.com&#x2F;2020&#x2F;10&#x2F;17&#x2F;subtype-inference-by-example-part-15-type-annotations.html" target="_blank">view original</a>]</div>
+        
+    </div>
+
+
+    <div class="content">
+        <p><a href="/blog/subtype-inference-by-example-part-14-type-annotation">上周</a>，我们讨论了静态类型注释背后的理论。本周，我们将介绍它们在 cubiml 中的实际实现。</p>
+<h2 id="lei-xing-zhu-shi-she-ji">类型注释设计</h2>
+<p>在 Ocaml 中，你可以通过写 <code>(expr : type)</code> 来注释表达式的类型，例如 <code>(foo.bar : string)</code> 或者 <code>(fun x -&gt; x : int -&gt; int)</code>。然而，虽然我们将在 cubiml 中使用的语法是相似的，但子类型和极化类型系统的引入使得类型注释的实际设计变得更加复杂。</p>
+<p>回顾<a href="/blog/subtype-inference-by-example-part-14-type-annotation">上周</a>，cubiml 中的类型注释有两个目的：<a href="/blog/subtype-inference-by-example-part-14-type-annotation/#increasing-the-number-of-compiler-errors">增加编译器错误的数量</a>以及<a href="/blog/subtype-inference-by-example-part-14-type-annotation/#improving-performance-and-error-messages">改善性能和错误信息</a>。如果只关心第一个目标，可以直接将 <code>type</code> 解析为值类型，并与 <code>expr</code> 的推断类型合一。这很容易实现，也很琐碎，并且实现了类型扩展的目标，即增加编译器错误的数量。请注意，在这个系统下，类型注释不需要“匹配”。它只是被“添加”到推断类型中。例如，<code>(42 : string)</code> 只会导致类型 <code>int | string</code>。</p>
+<p>然而，满足第二个目标比较棘手，因为它要求我们<em>替换</em>推断类型，而不仅仅是添加到它。这里的诀窍是解析类型注释，创建值类型<em>和</em>用类型，然后从推断的（值）类型向显式用类型添加流约束，并将显式值类型作为整个表达式的类型返回。</p>
+<p>假设有一些像下面这样没有类型注释的流约束序列：</p>
+<pre style="background-color:#2b303b;">
+<code><span style="color:#c0c5ce;">int_v -&gt; var1 -&gt; var2 -&gt; var3 -&gt; var4 -&gt; var5 -&gt; var6 -&gt; bool_u
+</span></code></pre>
+<p>这将导致类型错误，因为整数值类型与布尔用类型不兼容。然而，编译器不知道链中的哪一点可能代表了程序员的实际错误，从而导致非特定的错误信息，并可能导致糟糕的类型检查性能。</p>
+<p>现在假设程序员给 <code>var3</code> 添加了显式类型注解，说它的预期是整型。现在从显式类型注解中创建用和值类型，并使用它们来“断开链”，有点像这样。</p>
+<pre style="background-color:#2b303b;">
+<code><span style="color:#c0c5ce;">int_v -&gt; var1 -&gt; var2 -&gt; int_u XXX int_v -&gt; var4 -&gt; var5 -&gt; var6 -&gt; bool_u
+</span></code></pre>
+<p>现在，我们有两条较短的链，而不是一条长链。程序员的错误现在可以定位到 <code>int_v -&gt; var4 -&gt; var5 -&gt; var6 -&gt; bool_u</code> 部分，导致更具体的错误信息。</p>
+<p>这意味着在解析类型注释时，需要产生一个（用类型，值类型）对，其中前者是后者的子类型。实际上，这意味着类型注释仅限于可以映射到<em>两</em>极的类型。幸运的是，这在实践中并不是什么限制。</p>
+<h2 id="lei-xing-hua-de-biao-da-shi">类型化的表达式</h2>
+<p>首先，我们将为类型化的表达式添加语法规则和 AST 类型，<code>(expr: type)</code>。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;"> SimpleExpr = {
+     FieldAccess,
+     Record,
+     VarOrLiteral,
+     &quot;</span><span style="color:#a3be8c;">(</span><span style="color:#c0c5ce;">&quot; &lt;Expr&gt; &quot;</span><span style="color:#a3be8c;">)</span><span style="color:#c0c5ce;">&quot;,
++    &quot;</span><span style="color:#a3be8c;">(</span><span style="color:#c0c5ce;">&quot; &lt;Expr&gt; &quot;</span><span style="color:#a3be8c;">:</span><span style="color:#c0c5ce;">&quot; &lt;Type&gt; &quot;</span><span style="color:#a3be8c;">)</span><span style="color:#c0c5ce;">&quot; =&gt; Box::new(ast::Expr::Typed(&lt;&gt;)),
+ }
+ RefExpr = {
+     SimpleExpr,
+@@ -</span><span style="color:#d08770;">60</span><span style="color:#c0c5ce;">,</span><span style="color:#d08770;">9 </span><span style="color:#c0c5ce;">+</span><span style="color:#d08770;">60</span><span style="color:#c0c5ce;">,</span><span style="color:#d08770;">27 </span><span style="color:#c0c5ce;">@@ </span><span style="color:#b48ead;">pub enum </span><span style="color:#c0c5ce;">Expr {
+     Record(Option&lt;Box&lt;Expr&gt;&gt;, Vec&lt;(Spanned&lt;String&gt;, Box&lt;Expr&gt;)&gt;, Span),
+     RefGet(Spanned&lt;Box&lt;Expr&gt;&gt;),
+     RefSet(Spanned&lt;Box&lt;Expr&gt;&gt;, Box&lt;Expr&gt;),
++    Typed(Box&lt;Expr&gt;, Box&lt;TypeExpr&gt;),
+     Variable(Spanned&lt;String&gt;),
+ }
+</span></code></pre>
+<p>类型检查器的实现很简单：只需要解析 <code>TypeExpr</code> 得到 <code>(Value，Use)</code> 类型对，然后从推断的类型向解析的用类型添加流约束，并将解析的值类型作为整个表达式的类型返回。所有有趣的部分都在 <code>TypeExpr</code> 和新的 <code>parse_type_signature</code> 函数中，我们接下来会介绍。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">Typed(expr, sig) =&gt; {
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> expr_type = </span><span style="color:#96b5b4;">check_expr</span><span style="color:#c0c5ce;">(engine, bindings, expr)?;
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> sig_type = </span><span style="color:#96b5b4;">parse_type_signature</span><span style="color:#c0c5ce;">(engine, sig)?;
+    engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(expr_type, sig_type.</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">)?;
+    Ok(sig_type.</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">)
+}
+</span></code></pre><h2 id="lei-xing-zhu-shi">类型注释</h2>
+<p>接下来，要实现类型注释本身。这是完整的代码，作为一点预览，我将在后面一步步讲解。</p>
+<h4 id="yu-fa">语法</h4>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">RecordTypeExtension = &lt;Type&gt; &quot;</span><span style="color:#a3be8c;">with</span><span style="color:#c0c5ce;">&quot;;
+KeyPairType = {
+    &lt;Spanned&lt;Ident&gt;&gt; &quot;</span><span style="color:#a3be8c;">:</span><span style="color:#c0c5ce;">&quot; &lt;Type&gt;,
+}
+RecordTypeSub = &quot;</span><span style="color:#a3be8c;">{</span><span style="color:#c0c5ce;">&quot; &lt;RecordTypeExtension?&gt; &lt;SepList&lt;KeyPairType, </span><span style="background-color:#bf616a;color:#2b303b;">&quot;</span><span style="color:#c0c5ce;">;&quot;</span><span style="color:#a3be8c;">&gt;&gt; </span><span style="color:#c0c5ce;">&quot;}&quot;</span><span style="color:#a3be8c;">;
+RecordType: Box&lt;ast::TypeExpr&gt; = {
+    Spanned&lt;RecordTypeSub&gt; =&gt; {
+        let ((ext, fields), span) = &lt;&gt;;
+        Box::new(ast::TypeExpr::Record(ext, fields, span))
+    }
+}
+
+CaseTypeExtension = &lt;Type&gt; </span><span style="color:#c0c5ce;">&quot;|&quot;</span><span style="color:#a3be8c;">;
+VariantType = &lt;Spanned&lt;Tag&gt;&gt; </span><span style="color:#c0c5ce;">&quot;of&quot;</span><span style="color:#a3be8c;"> &lt;NoFunType&gt;;
+CaseTypeSub = </span><span style="color:#c0c5ce;">&quot;[&quot;</span><span style="color:#a3be8c;"> &lt;CaseTypeExtension?&gt; &lt;SepList&lt;VariantType, </span><span style="color:#c0c5ce;">&quot;|&quot;</span><span style="color:#a3be8c;">&gt;&gt; </span><span style="color:#c0c5ce;">&quot;]&quot;</span><span style="color:#a3be8c;">;
+CaseType: Box&lt;ast::TypeExpr&gt; = {
+    Spanned&lt;CaseTypeSub&gt; =&gt; {
+        let ((ext, cases), span) = &lt;&gt;;
+        Box::new(ast::TypeExpr::Case(ext, cases, span))
+    }
+}
+FuncTypeSub = &lt;NoFunType&gt; </span><span style="color:#c0c5ce;">&quot;-&gt;&quot;</span><span style="color:#a3be8c;"> &lt;Type&gt;;
+FuncType: Box&lt;ast::TypeExpr&gt; = {
+    Spanned&lt;FuncTypeSub&gt; =&gt; Box::new(ast::TypeExpr::Func(&lt;&gt;)),
+}
+RefReadability: ast::Readability = {
+    </span><span style="color:#c0c5ce;">&quot;readonly&quot; &quot;</span><span style="color:#b48ead;">ref</span><span style="color:#c0c5ce;">&quot;</span><span style="color:#a3be8c;"> =&gt; ast::Readability::ReadOnly,
+    </span><span style="color:#c0c5ce;">&quot;writeonly&quot; &quot;</span><span style="color:#b48ead;">ref</span><span style="color:#c0c5ce;">&quot;</span><span style="color:#a3be8c;"> =&gt; ast::Readability::WriteOnly,
+    </span><span style="color:#c0c5ce;">&quot;</span><span style="color:#b48ead;">ref</span><span style="color:#c0c5ce;">&quot;</span><span style="color:#a3be8c;"> =&gt; ast::Readability::ReadWrite,
+}
+RefType: Box&lt;ast::TypeExpr&gt; = {
+    NoFunType Spanned&lt;RefReadability&gt; =&gt; Box::new(ast::TypeExpr::Ref(&lt;&gt;)),
+}
+QMark: spans::Span = Spanned&lt;</span><span style="color:#c0c5ce;">&quot;?&quot;</span><span style="color:#a3be8c;">&gt; =&gt; &lt;&gt;.1;
+NullableType: Box&lt;ast::TypeExpr&gt; = {
+    NoFunType QMark =&gt; Box::new(ast::TypeExpr::Nullable(&lt;&gt;)),
+}
+
+TypeVar = </span><span style="color:#c0c5ce;">&quot;&#39;&quot;</span><span style="color:#a3be8c;"> &lt;Ident&gt;;
+
+NoFunType: Box&lt;ast::TypeExpr&gt; = {
+    Spanned&lt;Ident&gt; =&gt; Box::new(ast::TypeExpr::Ident(&lt;&gt;)),
+    &lt;NoFunType&gt; </span><span style="color:#c0c5ce;">&quot;as&quot;</span><span style="color:#a3be8c;"> &lt;Spanned&lt;TypeVar&gt;&gt; =&gt; Box::new(ast::TypeExpr::Alias(&lt;&gt;)),
+    Spanned&lt;TypeVar&gt; =&gt; Box::new(ast::TypeExpr::TypeVar(&lt;&gt;)),
+
+    RecordType,
+    CaseType,
+    RefType,
+    NullableType,
+    </span><span style="color:#c0c5ce;">&quot;(&quot;</span><span style="color:#a3be8c;"> &lt;Type&gt; </span><span style="color:#c0c5ce;">&quot;)&quot;</span><span style="color:#a3be8c;">,
+}
+Type: Box&lt;ast::TypeExpr&gt; = {
+    NoFunType,
+    FuncType,
+}
+</span></code></pre><h4 id="ast">AST</h4>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">#[</span><span style="color:#bf616a;">derive</span><span style="color:#c0c5ce;">(Debug, Clone, Copy, PartialEq, Eq)]
+</span><span style="color:#b48ead;">pub enum </span><span style="color:#c0c5ce;">Readability {
+    ReadWrite,
+    ReadOnly,
+    WriteOnly,
+}
+
+#[</span><span style="color:#bf616a;">derive</span><span style="color:#c0c5ce;">(Debug, Clone)]
+</span><span style="color:#b48ead;">pub enum </span><span style="color:#c0c5ce;">TypeExpr {
+    Alias(Box&lt;TypeExpr&gt;, Spanned&lt;String&gt;),
+    Case(Option&lt;Box&lt;TypeExpr&gt;&gt;, Vec&lt;(Spanned&lt;String&gt;, Box&lt;TypeExpr&gt;)&gt;, Span),
+    Func(Spanned&lt;(Box&lt;TypeExpr&gt;, Box&lt;TypeExpr&gt;)&gt;),
+    Ident(Spanned&lt;String&gt;),
+    Nullable(Box&lt;TypeExpr&gt;, Span),
+    Record(Option&lt;Box&lt;TypeExpr&gt;&gt;, Vec&lt;(Spanned&lt;String&gt;, Box&lt;TypeExpr&gt;)&gt;, Span),
+    Ref(Box&lt;TypeExpr&gt;, Spanned&lt;Readability&gt;),
+    TypeVar(Spanned&lt;String&gt;),
+}
+</span></code></pre><h4 id="lei-xing-jian-cha-qi">类型检查器</h4>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#b48ead;">fn </span><span style="color:#8fa1b3;">parse_type</span><span style="color:#c0c5ce;">(
+    </span><span style="color:#bf616a;">engine</span><span style="color:#c0c5ce;">: &amp;</span><span style="color:#b48ead;">mut</span><span style="color:#c0c5ce;"> TypeCheckerCore,
+    </span><span style="color:#bf616a;">bindings</span><span style="color:#c0c5ce;">: &amp;</span><span style="color:#b48ead;">mut </span><span style="color:#c0c5ce;">HashMap&lt;String, ((Value, Use), Span)&gt;,
+    </span><span style="color:#bf616a;">tyexpr</span><span style="color:#c0c5ce;">: &amp;ast::TypeExpr,
+) -&gt; Result&lt;(Value, Use)&gt; {
+    </span><span style="color:#b48ead;">use </span><span style="color:#c0c5ce;">ast::TypeExpr::*;
+    </span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> tyexpr {
+        Alias(lhs, (name, span)) =&gt; {
+            </span><span style="color:#b48ead;">let </span><span style="color:#c0c5ce;">(utype_value, utype) = engine.</span><span style="color:#96b5b4;">var</span><span style="color:#c0c5ce;">();
+            </span><span style="color:#b48ead;">let </span><span style="color:#c0c5ce;">(vtype, vtype_bound) = engine.</span><span style="color:#96b5b4;">var</span><span style="color:#c0c5ce;">();
+
+            </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> old = bindings.</span><span style="color:#96b5b4;">insert</span><span style="color:#c0c5ce;">(name.</span><span style="color:#96b5b4;">to_string</span><span style="color:#c0c5ce;">(), ((utype_value, vtype_bound), *span));
+            </span><span style="color:#b48ead;">if let </span><span style="color:#c0c5ce;">Some((_, old_span)) = old {
+                </span><span style="color:#b48ead;">return </span><span style="color:#c0c5ce;">Err(SyntaxError::new2(
+                    format!(&quot;</span><span style="color:#a3be8c;">SyntaxError: Redefinition of type variable &#39;</span><span style="color:#d08770;">{}</span><span style="color:#c0c5ce;">&quot;, name),
+                    *span,
+                    &quot;</span><span style="color:#a3be8c;">Note: Type variable was already defined here</span><span style="color:#c0c5ce;">&quot;,
+                    old_span,
+                ));
+            }
+
+            </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> lhs_type = </span><span style="color:#96b5b4;">parse_type</span><span style="color:#c0c5ce;">(engine, bindings, lhs)?;
+            engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(lhs_type.</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">, vtype_bound)?;
+            engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(utype_value, lhs_type.</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">)?;
+            Ok((vtype, utype))
+        }
+        Case(ext, cases, span) =&gt; {
+            </span><span style="color:#65737e;">// Create a dummy variable to use as the lazy flow values
+            </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> dummy = engine.</span><span style="color:#96b5b4;">var</span><span style="color:#c0c5ce;">();
+            </span><span style="color:#b48ead;">let </span><span style="color:#c0c5ce;">(vtype, vtype_bound) = engine.</span><span style="color:#96b5b4;">var</span><span style="color:#c0c5ce;">();
+
+            </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> utype_wildcard = </span><span style="color:#b48ead;">if let </span><span style="color:#c0c5ce;">Some(ext) = ext {
+                </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> ext_type = </span><span style="color:#96b5b4;">parse_type</span><span style="color:#c0c5ce;">(engine, bindings, ext)?;
+                engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(ext_type.</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">, vtype_bound)?;
+                Some((ext_type.</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">, dummy))
+            } </span><span style="color:#b48ead;">else </span><span style="color:#c0c5ce;">{
+                None
+            };
+
+            </span><span style="color:#b48ead;">let mut</span><span style="color:#c0c5ce;"> utype_case_arms = Vec::new();
+            </span><span style="color:#b48ead;">for </span><span style="color:#c0c5ce;">((tag, tag_span), wrapped_expr) in cases {
+                </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> wrapped_type = </span><span style="color:#96b5b4;">parse_type</span><span style="color:#c0c5ce;">(engine, bindings, wrapped_expr)?;
+
+                </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> case_value = engine.</span><span style="color:#96b5b4;">case</span><span style="color:#c0c5ce;">((tag.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">(), wrapped_type.</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">), *tag_span);
+                engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(case_value, vtype_bound)?;
+                utype_case_arms.</span><span style="color:#96b5b4;">push</span><span style="color:#c0c5ce;">((tag.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">(), (wrapped_type.</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">, dummy)));
+            }
+
+            </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> utype = engine.</span><span style="color:#96b5b4;">case_use</span><span style="color:#c0c5ce;">(utype_case_arms, utype_wildcard, *span);
+            Ok((vtype, utype))
+        }
+        Func(((lhs, rhs), span)) =&gt; {
+            </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> lhs_type = </span><span style="color:#96b5b4;">parse_type</span><span style="color:#c0c5ce;">(engine, bindings, lhs)?;
+            </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> rhs_type = </span><span style="color:#96b5b4;">parse_type</span><span style="color:#c0c5ce;">(engine, bindings, rhs)?;
+
+            </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> utype = engine.</span><span style="color:#96b5b4;">func_use</span><span style="color:#c0c5ce;">(lhs_type.</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">, rhs_type.</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">, *span);
+            </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> vtype = engine.</span><span style="color:#96b5b4;">func</span><span style="color:#c0c5ce;">(lhs_type.</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">, rhs_type.</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">, *span);
+            Ok((vtype, utype))
+        }
+        Ident((s, span)) =&gt; </span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> s.</span><span style="color:#96b5b4;">as_str</span><span style="color:#c0c5ce;">() {
+            &quot;</span><span style="color:#a3be8c;">bool</span><span style="color:#c0c5ce;">&quot; =&gt; Ok((engine.</span><span style="color:#b48ead;">bool</span><span style="color:#c0c5ce;">(*span), engine.</span><span style="color:#96b5b4;">bool_use</span><span style="color:#c0c5ce;">(*span))),
+            &quot;</span><span style="color:#a3be8c;">float</span><span style="color:#c0c5ce;">&quot; =&gt; Ok((engine.</span><span style="color:#96b5b4;">float</span><span style="color:#c0c5ce;">(*span), engine.</span><span style="color:#96b5b4;">float_use</span><span style="color:#c0c5ce;">(*span))),
+            &quot;</span><span style="color:#a3be8c;">int</span><span style="color:#c0c5ce;">&quot; =&gt; Ok((engine.</span><span style="color:#96b5b4;">int</span><span style="color:#c0c5ce;">(*span), engine.</span><span style="color:#96b5b4;">int_use</span><span style="color:#c0c5ce;">(*span))),
+            &quot;</span><span style="color:#a3be8c;">null</span><span style="color:#c0c5ce;">&quot; =&gt; Ok((engine.</span><span style="color:#96b5b4;">null</span><span style="color:#c0c5ce;">(*span), engine.</span><span style="color:#96b5b4;">null_use</span><span style="color:#c0c5ce;">(*span))),
+            &quot;</span><span style="color:#a3be8c;">str</span><span style="color:#c0c5ce;">&quot; =&gt; Ok((engine.</span><span style="color:#b48ead;">str</span><span style="color:#c0c5ce;">(*span), engine.</span><span style="color:#96b5b4;">str_use</span><span style="color:#c0c5ce;">(*span))),
+            &quot;</span><span style="color:#a3be8c;">number</span><span style="color:#c0c5ce;">&quot; =&gt; {
+                </span><span style="color:#b48ead;">let </span><span style="color:#c0c5ce;">(vtype, vtype_bound) = engine.</span><span style="color:#96b5b4;">var</span><span style="color:#c0c5ce;">();
+                </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> float_lit = engine.</span><span style="color:#96b5b4;">float</span><span style="color:#c0c5ce;">(*span);
+                </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> int_lit = engine.</span><span style="color:#96b5b4;">int</span><span style="color:#c0c5ce;">(*span);
+                engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(float_lit, vtype_bound)?;
+                engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(int_lit, vtype_bound)?;
+                Ok((vtype, engine.</span><span style="color:#96b5b4;">int_or_float_use</span><span style="color:#c0c5ce;">(*span)))
+            }
+            &quot;</span><span style="color:#a3be8c;">top</span><span style="color:#c0c5ce;">&quot; =&gt; {
+                </span><span style="color:#b48ead;">let </span><span style="color:#c0c5ce;">(_, utype) = engine.</span><span style="color:#96b5b4;">var</span><span style="color:#c0c5ce;">();
+                </span><span style="color:#b48ead;">let </span><span style="color:#c0c5ce;">(vtype, vtype_bound) = engine.</span><span style="color:#96b5b4;">var</span><span style="color:#c0c5ce;">();
+                </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> float_lit = engine.</span><span style="color:#96b5b4;">float</span><span style="color:#c0c5ce;">(*span);
+                </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> bool_lit = engine.</span><span style="color:#b48ead;">bool</span><span style="color:#c0c5ce;">(*span);
+                engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(float_lit, vtype_bound)?;
+                engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(bool_lit, vtype_bound)?;
+                Ok((vtype, utype))
+            }
+            &quot;</span><span style="color:#a3be8c;">bot</span><span style="color:#c0c5ce;">&quot; =&gt; {
+                </span><span style="color:#b48ead;">let </span><span style="color:#c0c5ce;">(vtype, _) = engine.</span><span style="color:#96b5b4;">var</span><span style="color:#c0c5ce;">();
+                </span><span style="color:#b48ead;">let </span><span style="color:#c0c5ce;">(utype_value, utype) = engine.</span><span style="color:#96b5b4;">var</span><span style="color:#c0c5ce;">();
+                </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> float_lit = engine.</span><span style="color:#96b5b4;">float_use</span><span style="color:#c0c5ce;">(*span);
+                </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> bool_lit = engine.</span><span style="color:#96b5b4;">bool_use</span><span style="color:#c0c5ce;">(*span);
+                engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(utype_value, float_lit)?;
+                engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(utype_value, bool_lit)?;
+                Ok((vtype, utype))
+            }
+            &quot;</span><span style="color:#a3be8c;">_</span><span style="color:#c0c5ce;">&quot; =&gt; Ok(engine.</span><span style="color:#96b5b4;">var</span><span style="color:#c0c5ce;">()),
+            _ =&gt; Err(SyntaxError::new1(
+                &quot;</span><span style="color:#a3be8c;">SyntaxError: Unrecognized simple type (choices are bool, float, int, str, number, null, top, bot, or _)</span><span style="color:#c0c5ce;">&quot;,
+                *span,
+            )),
+        },
+        Nullable(lhs, span) =&gt; {
+            </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> lhs_type = </span><span style="color:#96b5b4;">parse_type</span><span style="color:#c0c5ce;">(engine, bindings, lhs)?;
+            </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> utype = engine.</span><span style="color:#96b5b4;">null_check_use</span><span style="color:#c0c5ce;">(lhs_type.</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">, *span);
+
+            </span><span style="color:#b48ead;">let </span><span style="color:#c0c5ce;">(vtype, vtype_bound) = engine.</span><span style="color:#96b5b4;">var</span><span style="color:#c0c5ce;">();
+            </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> null_lit = engine.</span><span style="color:#96b5b4;">null</span><span style="color:#c0c5ce;">(*span);
+            engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(lhs_type.</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">, vtype_bound)?;
+            engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(null_lit, vtype_bound)?;
+            Ok((vtype, utype))
+        }
+        Record(ext, fields, span) =&gt; {
+            </span><span style="color:#b48ead;">let </span><span style="color:#c0c5ce;">(utype_value, utype) = engine.</span><span style="color:#96b5b4;">var</span><span style="color:#c0c5ce;">();
+
+            </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> vtype_wildcard = </span><span style="color:#b48ead;">if let </span><span style="color:#c0c5ce;">Some(ext) = ext {
+                </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> ext_type = </span><span style="color:#96b5b4;">parse_type</span><span style="color:#c0c5ce;">(engine, bindings, ext)?;
+                engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(utype_value, ext_type.</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">)?;
+                Some(ext_type.</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">)
+            } </span><span style="color:#b48ead;">else </span><span style="color:#c0c5ce;">{
+                None
+            };
+
+            </span><span style="color:#b48ead;">let mut</span><span style="color:#c0c5ce;"> vtype_fields = Vec::new();
+
+            </span><span style="color:#b48ead;">for </span><span style="color:#c0c5ce;">((name, name_span), wrapped_expr) in fields {
+                </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> wrapped_type = </span><span style="color:#96b5b4;">parse_type</span><span style="color:#c0c5ce;">(engine, bindings, wrapped_expr)?;
+
+                </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> obj_use = engine.</span><span style="color:#96b5b4;">obj_use</span><span style="color:#c0c5ce;">((name.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">(), wrapped_type.</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">), *name_span);
+                engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(utype_value, obj_use)?;
+                vtype_fields.</span><span style="color:#96b5b4;">push</span><span style="color:#c0c5ce;">((name.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">(), wrapped_type.</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">));
+            }
+
+            </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> vtype = engine.</span><span style="color:#96b5b4;">obj</span><span style="color:#c0c5ce;">(vtype_fields, vtype_wildcard, *span);
+            Ok((vtype, utype))
+        }
+        Ref(lhs, (rw, span)) =&gt; {
+            </span><span style="color:#b48ead;">use </span><span style="color:#c0c5ce;">ast::Readability::*;
+            </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> lhs_type = </span><span style="color:#96b5b4;">parse_type</span><span style="color:#c0c5ce;">(engine, bindings, lhs)?;
+
+            </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> write = </span><span style="color:#b48ead;">if </span><span style="color:#c0c5ce;">*rw == ReadOnly {
+                (None, None)
+            } </span><span style="color:#b48ead;">else </span><span style="color:#c0c5ce;">{
+                (Some(lhs_type.</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">), Some(lhs_type.</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">))
+            };
+            </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> read = </span><span style="color:#b48ead;">if </span><span style="color:#c0c5ce;">*rw == WriteOnly {
+                (None, None)
+            } </span><span style="color:#b48ead;">else </span><span style="color:#c0c5ce;">{
+                (Some(lhs_type.</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">), Some(lhs_type.</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">))
+            };
+
+            </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> vtype = engine.</span><span style="color:#96b5b4;">reference</span><span style="color:#c0c5ce;">(write.</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">, read.</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">, *span);
+            </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> utype = engine.</span><span style="color:#96b5b4;">reference_use</span><span style="color:#c0c5ce;">(write.</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">, read.</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">, *span);
+            Ok((vtype, utype))
+        }
+        TypeVar((name, span)) =&gt; {
+            </span><span style="color:#b48ead;">if let </span><span style="color:#c0c5ce;">Some((res, _)) = bindings.</span><span style="color:#96b5b4;">get</span><span style="color:#c0c5ce;">(name.</span><span style="color:#96b5b4;">as_str</span><span style="color:#c0c5ce;">()) {
+                Ok(*res)
+            } </span><span style="color:#b48ead;">else </span><span style="color:#c0c5ce;">{
+                Err(SyntaxError::new1(
+                    format!(&quot;</span><span style="color:#a3be8c;">SyntaxError: Undefined type variable </span><span style="color:#d08770;">{}</span><span style="color:#c0c5ce;">&quot;, name),
+                    *span,
+                ))
+            }
+        }
+    }
+}
+
+</span><span style="color:#b48ead;">fn </span><span style="color:#8fa1b3;">parse_type_signature</span><span style="color:#c0c5ce;">(</span><span style="color:#bf616a;">engine</span><span style="color:#c0c5ce;">: &amp;</span><span style="color:#b48ead;">mut</span><span style="color:#c0c5ce;"> TypeCheckerCore, </span><span style="color:#bf616a;">tyexpr</span><span style="color:#c0c5ce;">: &amp;ast::TypeExpr) -&gt; Result&lt;(Value, Use)&gt; {
+    </span><span style="color:#b48ead;">let mut</span><span style="color:#c0c5ce;"> bindings = HashMap::new();
+    </span><span style="color:#96b5b4;">parse_type</span><span style="color:#c0c5ce;">(engine, &amp;</span><span style="color:#b48ead;">mut</span><span style="color:#c0c5ce;"> bindings, tyexpr)
+}
+</span></code></pre><h2 id="xiang-xi-de-lei-xing-zhu-shi">详细的类型注释</h2>
+<p>回顾一下，解析类型签名需要产生值类型<em>和</em>用类型。最显而易见的方法是为用类型和值类型注释制定单独的语法，并将类型签名语法定义为两者的对。然而，这样做非常啰嗦，对于习惯于使用非极化类型系统语言的用户来说是很困惑的，而且实际上也没有必要。在我们的系统中，程序员通常认为几乎所有的作为类型的东西(<code>int</code>, <code>{a: string; b: float}</code>, <code>bool -&gt; int -&gt; int</code> 等)都可以解释为用类型和值类型。</p>
+<p>因此，我们的类型注释语法只涵盖了与有效用和值类型均对应的类型，在我们的类型系统中，除了联合和交集类型之外，基本上就是所有了。幸运的是，在处理单型时，这实际上并不是一个限制(在处理类型归并和多态类型签名时，这个限制更为显著，但这是一个巨大的麻烦，我不打算涉及)。</p>
+<h3 id="ji-ben-lei-xing">基本类型</h3>
+<p>首先，我们有原始类型：<code>bool</code>, <code>float</code>, <code>int</code>, <code>str</code>, 和 <code>null</code>。这些只是在语法中用它们的名字来表示。为了避免将这些类型名变成关键字（并使语法对用户定义类型有更多的未来证明），语法只是接受任何标识符，并将其存储在 <code>TypeExpr::Ident</code> 节点中，检查稍后进行。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">Spanned&lt;Ident&gt; =&gt; Box::new(ast::TypeExpr::Ident(&lt;&gt;)),
+</span></code></pre>
+<p>一旦进入 <code>parse_type_signature</code>，当匹配 <code>Ident</code> 节点时，只需对类型进行匹配，并返回相应的类型对，如果标识符不是有效的基本类型名，则返回语法错误。除了 <code>bool</code>, <code>float</code>, <code>int</code>, <code>str</code>, 和 <code>null</code> 之外，还有 <code>bot</code>, <code>top</code>, <code>number</code> 和 <code>_</code>，我们后面会讲到。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">Ident((s, span)) =&gt; </span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> s.</span><span style="color:#96b5b4;">as_str</span><span style="color:#c0c5ce;">() {
+    &quot;</span><span style="color:#a3be8c;">bool</span><span style="color:#c0c5ce;">&quot; =&gt; Ok((engine.</span><span style="color:#b48ead;">bool</span><span style="color:#c0c5ce;">(*span), engine.</span><span style="color:#96b5b4;">bool_use</span><span style="color:#c0c5ce;">(*span))),
+    &quot;</span><span style="color:#a3be8c;">float</span><span style="color:#c0c5ce;">&quot; =&gt; Ok((engine.</span><span style="color:#96b5b4;">float</span><span style="color:#c0c5ce;">(*span), engine.</span><span style="color:#96b5b4;">float_use</span><span style="color:#c0c5ce;">(*span))),
+    &quot;</span><span style="color:#a3be8c;">int</span><span style="color:#c0c5ce;">&quot; =&gt; Ok((engine.</span><span style="color:#96b5b4;">int</span><span style="color:#c0c5ce;">(*span), engine.</span><span style="color:#96b5b4;">int_use</span><span style="color:#c0c5ce;">(*span))),
+    &quot;</span><span style="color:#a3be8c;">null</span><span style="color:#c0c5ce;">&quot; =&gt; Ok((engine.</span><span style="color:#96b5b4;">null</span><span style="color:#c0c5ce;">(*span), engine.</span><span style="color:#96b5b4;">null_use</span><span style="color:#c0c5ce;">(*span))),
+    &quot;</span><span style="color:#a3be8c;">str</span><span style="color:#c0c5ce;">&quot; =&gt; Ok((engine.</span><span style="color:#b48ead;">str</span><span style="color:#c0c5ce;">(*span), engine.</span><span style="color:#96b5b4;">str_use</span><span style="color:#c0c5ce;">(*span))),
+    &quot;</span><span style="color:#a3be8c;">number</span><span style="color:#c0c5ce;">&quot; =&gt; </span><span style="color:#65737e;">// todo
+    </span><span style="color:#c0c5ce;">&quot;</span><span style="color:#a3be8c;">top</span><span style="color:#c0c5ce;">&quot; =&gt; </span><span style="color:#65737e;">// todo
+    </span><span style="color:#c0c5ce;">&quot;</span><span style="color:#a3be8c;">bot</span><span style="color:#c0c5ce;">&quot; =&gt; </span><span style="color:#65737e;">// todo
+    </span><span style="color:#c0c5ce;">&quot;</span><span style="color:#a3be8c;">_</span><span style="color:#c0c5ce;">&quot; =&gt; </span><span style="color:#65737e;">// todo
+    </span><span style="color:#c0c5ce;">_ =&gt; Err(SyntaxError::new1(
+        &quot;</span><span style="color:#a3be8c;">SyntaxError: Unrecognized simple type (choices are bool, float, int, str, number, null, top, bot, or _)</span><span style="color:#c0c5ce;">&quot;,
+        *span,
+    )),
+},
+</span></code></pre>
+<p><code>parse_type_signature</code> 返回 <code>(Value, Use)</code> 对。对于原始类型来说，这微不足道 - 只需调用类型检查器核心中相应的构造函数。例如对于 <code>bool</code>，只需做 <code>(engine.bool(*span), engine.bool_use(*span))</code>。</p>
+<p>然而，有一个复杂的问题 - 以前，我们没有费心去创建空用类型，因为没有必要。没有类型注释，就没有办法利用一个值被保证为空的事实。然而，现在情况不同了。程序员可能想把一个值（只）注释为空，为了像上面讨论的那样“断开链”，我们需要值和用类型。因此，我们需要按照通常的模式，快速进入并添加空用类型：</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">@@ -</span><span style="color:#d08770;">42</span><span style="color:#c0c5ce;">,</span><span style="color:#d08770;">6 </span><span style="color:#c0c5ce;">+</span><span style="color:#d08770;">42</span><span style="color:#c0c5ce;">,</span><span style="color:#d08770;">7 </span><span style="color:#c0c5ce;">@@ </span><span style="color:#b48ead;">enum </span><span style="color:#c0c5ce;">UTypeHead {
+     UBool,
+     UFloat,
+     UInt,
++    UNull,
+     UStr,
+     UIntOrFloat,
+     UFunc {
+@@ -</span><span style="color:#d08770;">78</span><span style="color:#c0c5ce;">,</span><span style="color:#d08770;">6 </span><span style="color:#c0c5ce;">+</span><span style="color:#d08770;">79</span><span style="color:#c0c5ce;">,</span><span style="color:#d08770;">7 </span><span style="color:#c0c5ce;">@@ </span><span style="color:#b48ead;">fn </span><span style="color:#8fa1b3;">check_heads</span><span style="color:#c0c5ce;">(
+         (&amp;</span><span style="color:#bf616a;">VBool</span><span style="color:#c0c5ce;">, &amp;</span><span style="color:#bf616a;">UBool</span><span style="color:#c0c5ce;">) =&gt; Ok(()),
+         (&amp;VFloat, &amp;UFloat) =&gt; Ok(()),
+         (&amp;VInt, &amp;UInt) =&gt; Ok(()),
++        (&amp;VNull, &amp;UNull) =&gt; Ok(()),
+         (&amp;VStr, &amp;UStr) =&gt; Ok(()),
+         (&amp;VInt, &amp;UIntOrFloat) =&gt; Ok(()),
+         (&amp;VFloat, &amp;UIntOrFloat) =&gt; Ok(()),
+@@ -</span><span style="color:#d08770;">188</span><span style="color:#c0c5ce;">,</span><span style="color:#d08770;">6 </span><span style="color:#c0c5ce;">+</span><span style="color:#d08770;">190</span><span style="color:#c0c5ce;">,</span><span style="color:#d08770;">7 </span><span style="color:#c0c5ce;">@@ </span><span style="color:#b48ead;">fn </span><span style="color:#8fa1b3;">check_heads</span><span style="color:#c0c5ce;">(
+                 UBool =&gt; &quot;boolean&quot;,
+                 UFloat =&gt; &quot;float&quot;,
+                 UInt =&gt; &quot;integer&quot;,
++                UNull =&gt; &quot;null&quot;,
+                 UStr =&gt; &quot;string&quot;,
+                 UIntOrFloat =&gt; &quot;float or integer&quot;,
+                 UFunc { .. } =&gt; &quot;function&quot;,
+@@ -291,6 +294,9 @@ impl TypeCheckerCore {
+     pub fn int_use(&amp;</span><span style="color:#bf616a;">mut self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">span</span><span style="color:#c0c5ce;">: </span><span style="color:#bf616a;">Span</span><span style="color:#c0c5ce;">) -&gt; Use {
+         </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.new_use(</span><span style="color:#bf616a;">UTypeHead</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">UInt</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">span</span><span style="color:#c0c5ce;">)
+     }
++    pub fn null_use(&amp;</span><span style="color:#bf616a;">mut self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">span</span><span style="color:#c0c5ce;">: </span><span style="color:#bf616a;">Span</span><span style="color:#c0c5ce;">) -&gt; Use {
++        </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.new_use(</span><span style="color:#bf616a;">UTypeHead</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">UNull</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">span</span><span style="color:#c0c5ce;">)
++    }
+     pub fn str_use(&amp;</span><span style="color:#bf616a;">mut self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">span</span><span style="color:#c0c5ce;">: </span><span style="color:#bf616a;">Span</span><span style="color:#c0c5ce;">) -&gt; Use {
+         </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.new_use(</span><span style="color:#bf616a;">UTypeHead</span><span style="color:#c0c5ce;">::</span><span style="color:#bf616a;">UStr</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">span</span><span style="color:#c0c5ce;">)
+     }
+</span></code></pre><h3 id="shu-zi">数字</h3>
+<p>回想一下，有序比较运算符(&lt;, &gt;, &lt;=, and &gt;=)比较类型为 &quot;int | float &quot;的值，也就是说，它们既接受整数，<em>也接受</em>浮点数。尽管这并不常见，但只使用输入值进行比较的代码会希望使用这种类型，因此，我们需要在类型系统中公开它。例如，考虑以下函数。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#b48ead;">let </span><span style="color:#bf616a;">compare </span><span style="color:#c0c5ce;">= fun args -&gt;
+    </span><span style="color:#b48ead;">if</span><span style="color:#c0c5ce;"> args.x &lt; args.y </span><span style="color:#b48ead;">then
+        </span><span style="color:#d08770;">-1
+    </span><span style="color:#b48ead;">else if</span><span style="color:#c0c5ce;"> args.x == args.y </span><span style="color:#b48ead;">then
+        </span><span style="color:#d08770;">0
+    </span><span style="color:#b48ead;">else
+        </span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">;
+</span></code></pre>
+<p>这样的函数应该有类型签名 <code>{x: number; y: number} -&gt; int</code>，其中 <code>number</code> 是 <code>int | float</code> 的简写。我反反复复地考虑是把这个类型称为 &quot;comparable&quot;，它反映了它的真正含义（可以比较的类型），还是称为 &quot;number&quot;，它反映了在 cubiml 中什么类型恰好实现了它，但最终决定后一种类型会减少混乱。然而，这只是为了说明问题 - 根据你为自己的语言选择的类型系统的精确细节，你可能会做不同的事情。</p>
+<p>总之，从语法上看，这只是使用 <code>Ident</code> 节点，就像上面的基础类型一样。唯一的区别在于 <code>parse_type_signature</code>。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">&quot;</span><span style="color:#a3be8c;">number</span><span style="color:#c0c5ce;">&quot; =&gt; {
+    </span><span style="color:#65737e;">// form the union vtype = float | int
+    </span><span style="color:#b48ead;">let </span><span style="color:#c0c5ce;">(vtype, vtype_bound) = engine.</span><span style="color:#96b5b4;">var</span><span style="color:#c0c5ce;">();
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> float_lit = engine.</span><span style="color:#96b5b4;">float</span><span style="color:#c0c5ce;">(*span);
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> int_lit = engine.</span><span style="color:#96b5b4;">int</span><span style="color:#c0c5ce;">(*span);
+    engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(float_lit, vtype_bound)?;
+    engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(int_lit, vtype_bound)?;
+    Ok((vtype, engine.</span><span style="color:#96b5b4;">int_or_float_use</span><span style="color:#c0c5ce;">(*span)))
+}
+</span></code></pre>
+<p>对于用类型，只需返回 <code>engine.int_or_float_use()</code>。然而，在我们的类型系统中并没有 <code>int_or_float</code> 值类型这种东西。取而代之的是，我们只是取整型和浮点型的常规值类型的联合（分别是 <code>engine.int()</code> 和 <code>engine.float()</code>）。回顾一下，要取两个值类型的联合，只需创建一个临时类型变量，然后从每个类型中向该变量添加流约束。(我们也可以通过同样的过程取用类型的交集，只是边反过来)。</p>
+<h3 id="zhan-wei-fu">占位符</h3>
+<p>有时，可以只指定类型的<em>部分</em>是很有用的。为此，我们支持占位符类型，写成 <code>_</code>。例如，如果有函数 <code>f</code>，想指定它接受 <code>int</code> 作为参数，但不想指定关于返回类型的任何内容，你可以直接写 <code>(f : int -&gt; _)</code>。</p>
+<p>占位符有效地被推断类型的相应部分所填充。这意味着当使用占位符时，类型注解不再完全“断开链”。它只对明确指定的类型部分进行断链。事实上，写 <code>(e : _)</code> 相当于只写 <code>e</code>，根本没有类型注释。</p>
+<p>总之，从实现上来说，这是所有类型中最容易实现的类型。只需要创建一个新类型变量然后返回。这将导致链中一个额外的环节，但其他方面表现的就像没有类型注解一样。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">&quot;</span><span style="color:#a3be8c;">_</span><span style="color:#c0c5ce;">&quot; =&gt; Ok(engine.</span><span style="color:#96b5b4;">var</span><span style="color:#c0c5ce;">()),
+</span></code></pre><h3 id="ke-kong-lei-xing">可空类型</h3>
+<p>接下来是可空类型，即可能是空或一些非空值的值类型。这使用语法 <code>T?</code>，其中 <code>T</code> 是另一种类型。例如 <code>string?</code> 表示 <code>string | null</code>，而 <code>number?</code> 表示 <code>int | float | null</code>。</p>
+<pre style="background-color:#2b303b;">
+<code><span style="color:#c0c5ce;">QMark: spans::Span = Spanned&lt;&quot;?&quot;&gt; =&gt; &lt;&gt;.1;
+NullableType: Box&lt;ast::TypeExpr&gt; = {
+    NoFunType QMark =&gt; Box::new(ast::TypeExpr::Nullable(&lt;&gt;)),
+}
+</span></code></pre>
+<p>在类型检查方面，可空类型与 <code>number</code> 类似。然而，AST 中的 <code>Nullable</code> 节点包含另一个类型签名（<code>T?</code> 中的 <code>T</code>）。因此，我们首先解析子类型签名，为子类型创建一个类型对。对于用类型，我们把子用类型封装进 <code>null_check_use</code> 并返回它。对于值类型，我们组成联合 <code>T | null</code>，其中 T 是子值类型，类似于前面的 <code>number</code> 例子。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">Nullable(lhs, span) =&gt; {
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> lhs_type = </span><span style="color:#96b5b4;">parse_type</span><span style="color:#c0c5ce;">(engine, bindings, lhs)?;
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> utype = engine.</span><span style="color:#96b5b4;">null_check_use</span><span style="color:#c0c5ce;">(lhs_type.</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">, *span);
+
+    </span><span style="color:#65737e;">// form the union vtype = lhs_type.0 | null
+    </span><span style="color:#b48ead;">let </span><span style="color:#c0c5ce;">(vtype, vtype_bound) = engine.</span><span style="color:#96b5b4;">var</span><span style="color:#c0c5ce;">();
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> null_lit = engine.</span><span style="color:#96b5b4;">null</span><span style="color:#c0c5ce;">(*span);
+    engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(lhs_type.</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">, vtype_bound)?;
+    engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(null_lit, vtype_bound)?;
+    Ok((vtype, utype))
+}
+</span></code></pre><h3 id="han-shu-lei-xing">函数类型</h3>
+<p>函数类型使用语法 <code>T1 -&gt; T2</code>，其中 <code>T1</code> 是参数类型，<code>T2</code> 是返回类型。</p>
+<pre style="background-color:#2b303b;">
+<code><span style="color:#c0c5ce;">FuncTypeSub = &lt;NoFunType&gt; &quot;-&gt;&quot; &lt;Type&gt;;
+FuncType: Box&lt;ast::TypeExpr&gt; = {
+    Spanned&lt;FuncTypeSub&gt; =&gt; Box::new(ast::TypeExpr::Func(&lt;&gt;)),
+}
+</span></code></pre>
+<p>类型检查很简单 - 只需解析子类型签名，并从中创建一个函数用和值类型。唯一稍微棘手的部分是，函数参数是逆变的，所以需要将参数类型的顺序反过来。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">Func(((lhs, rhs), span)) =&gt; {
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> lhs_type = </span><span style="color:#96b5b4;">parse_type</span><span style="color:#c0c5ce;">(engine, bindings, lhs)?;
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> rhs_type = </span><span style="color:#96b5b4;">parse_type</span><span style="color:#c0c5ce;">(engine, bindings, rhs)?;
+
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> utype = engine.</span><span style="color:#96b5b4;">func_use</span><span style="color:#c0c5ce;">(lhs_type.</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">, rhs_type.</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">, *span);
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> vtype = engine.</span><span style="color:#96b5b4;">func</span><span style="color:#c0c5ce;">(lhs_type.</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">, rhs_type.</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">, *span);
+    Ok((vtype, utype))
+}
+</span></code></pre><h3 id="yin-yong-lei-xing">引用类型</h3>
+<p>这里有趣的部分实际上是语法。回想一下，在为 cubiml 添加引用类型时，我们在类型系统中留下了空间来支持只读和只写引用，尽管语言没有定义实际创建它们的方法。除了类型系统的一致性之外，主要原因是一旦添加了类型注释，你可能希望能够显式地<em>放宽</em>一个到只读或只写类型的引用。好了，现在就是做这个的时候了。</p>
+<p>在 Ocaml 中，引用总是读写式的，使用 <code>T ref</code> 的语法。由于某些原因（显然可以追溯到 70 年代 CS 论文中的符号约定），通用类型参数在 Ocaml 中是<em>反的</em>，即引用<em>值</em>写成 <code>ref 1</code>，但引用<em>类型</em>写成 <code>int ref</code>。</p>
+<p>由于 Ocaml 不支持只读或只写的引用，所以在这里必须为它们创造我们自己的语法。我采用 <code>T ref</code> 来表示读写引用，而 <code>T readonly ref</code> 和 <code>T writeonly ref</code> 分别表示只读和只写引用。</p>
+<pre style="background-color:#2b303b;">
+<code><span style="color:#c0c5ce;">RefReadability: ast::Readability = {
+    &quot;readonly&quot; &quot;ref&quot; =&gt; ast::Readability::ReadOnly,
+    &quot;writeonly&quot; &quot;ref&quot; =&gt; ast::Readability::WriteOnly,
+    &quot;ref&quot; =&gt; ast::Readability::ReadWrite,
+}
+RefType: Box&lt;ast::TypeExpr&gt; = {
+    NoFunType Spanned&lt;RefReadability&gt; =&gt; Box::new(ast::TypeExpr::Ref(&lt;&gt;)),
+}
+</span></code></pre>
+<p>我们在 AST 中还有一个单独的枚举来存储引用类型签名的可读性状态。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">#[</span><span style="color:#bf616a;">derive</span><span style="color:#c0c5ce;">(Debug, Clone, Copy, PartialEq, Eq)]
+</span><span style="color:#b48ead;">pub enum </span><span style="color:#c0c5ce;">Readability {
+    ReadWrite,
+    ReadOnly,
+    WriteOnly,
+}
+</span></code></pre>
+<p>现在是类型检查器部分。基本思路很简单 - 只需解析子类型签名并将其传递给引用类型构造器。唯一复杂的一点是，引用类型构造器的读和写参数是可选的。当引用类型是只读时，我们传递为写参数传递 <code>None</code>，否则像往常一样传递 <code>Some(lhs_type)</code>，同样的，对于只写引用也是如此。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">Ref(lhs, (rw, span)) =&gt; {
+    </span><span style="color:#b48ead;">use </span><span style="color:#c0c5ce;">ast::Readability::*;
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> lhs_type = </span><span style="color:#96b5b4;">parse_type</span><span style="color:#c0c5ce;">(engine, bindings, lhs)?;
+
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> write = </span><span style="color:#b48ead;">if </span><span style="color:#c0c5ce;">*rw == ReadOnly {
+        (None, None)
+    } </span><span style="color:#b48ead;">else </span><span style="color:#c0c5ce;">{
+        (Some(lhs_type.</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">), Some(lhs_type.</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">))
+    };
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> read = </span><span style="color:#b48ead;">if </span><span style="color:#c0c5ce;">*rw == WriteOnly {
+        (None, None)
+    } </span><span style="color:#b48ead;">else </span><span style="color:#c0c5ce;">{
+        (Some(lhs_type.</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">), Some(lhs_type.</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">))
+    };
+
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> vtype = engine.</span><span style="color:#96b5b4;">reference</span><span style="color:#c0c5ce;">(write.</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">, read.</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">, *span);
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> utype = engine.</span><span style="color:#96b5b4;">reference_use</span><span style="color:#c0c5ce;">(write.</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">, read.</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">, *span);
+    Ok((vtype, utype))
+}
+</span></code></pre>
+<p>注意，可读性是特定引用的属性（或者说是它的静态类型），而不是存储位置。拥有只读的引用仍然允许可能存在其他可写引用到该位置，反之亦然。例如，考虑下面的代码，其中有 <code>add</code> 函数，它通过输出指针“返回”它的答案，这在 C 代码中很常见。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#b48ead;">let </span><span style="color:#bf616a;">add </span><span style="color:#c0c5ce;">= (
+    </span><span style="color:#65737e;">(* the type annotation ensures that this function does not read from args.out *)
+    </span><span style="color:#b48ead;">fun </span><span style="color:#bf616a;">args </span><span style="color:#c0c5ce;">-&gt;
+        args.out := args.x + args.y
+    : {x: </span><span style="color:#b48ead;">int</span><span style="color:#c0c5ce;">; y: </span><span style="color:#b48ead;">int</span><span style="color:#c0c5ce;">; out: </span><span style="color:#b48ead;">int writeonly ref</span><span style="color:#c0c5ce;">} -&gt; _);
+
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">r </span><span style="color:#c0c5ce;">= </span><span style="color:#b48ead;">ref </span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">;
+add {x=</span><span style="color:#d08770;">91</span><span style="color:#c0c5ce;">; y=</span><span style="color:#d08770;">101</span><span style="color:#c0c5ce;">; out=r};
+
+</span><span style="color:#65737e;">(* let&#39;s check what answer we got *)
+</span><span style="color:#c0c5ce;">!r
+</span></code></pre>
+<p>我们在输出指针上加了 <code>writeonly</code> 注解，以确保 <code>add</code> 函数不会试图从中读取和访问未初始化的数据。试图这样做会导致预期的类型错误：</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#c0c5ce;">TypeError: Reference is not readable.
+Note: Ref is made write-only here
+        </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> _ = !args.out </span><span style="color:#b48ead;">in
+</span><span style="color:#c0c5ce;">        args.out := args.x + args.y
+    : {x: </span><span style="color:#b48ead;">int</span><span style="color:#c0c5ce;">; y: </span><span style="color:#b48ead;">int</span><span style="color:#c0c5ce;">; out: </span><span style="color:#b48ead;">int writeonly ref</span><span style="color:#c0c5ce;">} -&gt; _);
+                                ^~~~~~~~~~~~~
+
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">r </span><span style="color:#c0c5ce;">= </span><span style="color:#b48ead;">ref </span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">;
+But is read here.
+    </span><span style="color:#65737e;">(* the type annotation ensures that this function does not read from args.out *)
+    </span><span style="color:#b48ead;">fun </span><span style="color:#bf616a;">args </span><span style="color:#c0c5ce;">-&gt;
+        </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> _ = !args.out </span><span style="color:#b48ead;">in
+                 </span><span style="color:#c0c5ce;">^~~~~~~~
+        args.out := args.x + args.y
+    : {x: </span><span style="color:#b48ead;">int</span><span style="color:#c0c5ce;">; y: </span><span style="color:#b48ead;">int</span><span style="color:#c0c5ce;">; out: </span><span style="color:#b48ead;">int writeonly ref</span><span style="color:#c0c5ce;">} -&gt; _);
+</span></code></pre>
+<p>然而，我们仍然可以在随后从 <code>r</code> 读取，来看 <code>add</code> 的输出，即使它指向与 <code>args.out</code> 相同的位置。特别是，这意味着持有 <code>readonly</code> 类型的引用并不能保证连续的读取返回相同的值，因为有别名的可能性。如果你想做这样的保证，你就需要一个 Rust 风格的所有权系统，其中有仿射类型和借用。</p>
+<h3 id="ji-lu-lei-xing">记录类型</h3>
+<p>记录类型与记录值类似，但字段名用 <code>:</code> 而不是 <code>=</code> 分开。例如，记录类型有名为 <code>a</code> 的整型字段和名为 <code>b</code> 的可空字符串字段，它将是 <code>{a: int; b: string?}</code>。</p>
+<p>然而，还有两个其他皱褶。首先，我们要求字段列表是非空的。如果你想输入一个空记录（<code>{}</code>），你需要写 <code>top</code> 来代替，原因我后面解释。</p>
+<p>其次，我们使用类似记录扩展语法来支持行多态。回想一下，占位符类型 <code>_</code> 允许你只指定类型的一部分。例如，类型签名 <code>{a: int; b: _}</code> 确保 <code>a</code> 是一个 <code>int</code>，同时对字段 <code>b</code> 的类型没有任何限制。</p>
+<p>但是，字段名的列表仍然是完全指定的。如果你想指定单独字段的类型，同时不对可能存在或不存在的任何其他字段施加任何限制，你可以写 <code>{_ with a: int}</code>，类似于记录扩展语法 <code>{foo with a=4}</code>。</p>
+<blockquote>
+<p><strong>注：</strong> <a href="/blog/subtype-inference-by-example-part-9-non-exhaustive-matching-record-extensions-and-row-polymorphism.html#record-extension">上一篇</a>，我以为 Ocaml 不支持记录扩展，所以用类似 Elm 的语法代替。然而，事实证明，虽然 Ocaml 不支持记录扩展，但它有一个类似的功能，叫做功能更新，使用的语法是 <code>{old_record with foo=new_val}</code>。Ocaml 的版本限制很多 - 它只能改变现有字段的值，而不能遮蔽或添加新的字段，但它足够相似，所以我决定将 cubiml 切换到使用 <code>with</code> 进行记录扩展，而不是 <code>|</code>。</p>
+</blockquote>
+<p>请注意，只有当左边是占位符类型时，记录类型扩展语法才真正有意义。例如，没有理由写类似于 <code>{ {a: int} with b: bool }</code> 这样的类型签名，因为你可以轻松地写 <code>{a:int; b: bool}</code> 来代替。然而，为了保持语法的简单性，我们仍然允许左边是任意类型签名，因为这比试图限制它是占位符要容易。同样，<code>T?</code> 中的 <code>T</code> 可以是任何类型，允许多余的类型签名，如 <code>string?? </code>甚至 <code>null?</code>，因为这样可以保持语法简单。</p>
+<pre style="background-color:#2b303b;">
+<code><span style="color:#c0c5ce;">RecordTypeExtension = &lt;Type&gt; &quot;with&quot;;
+KeyPairType = {
+    &lt;Spanned&lt;Ident&gt;&gt; &quot;:&quot; &lt;Type&gt;,
+}
+RecordTypeSub = &quot;{&quot; &lt;RecordTypeExtension?&gt; &lt;SepList&lt;KeyPairType, &quot;;&quot;&gt;&gt; &quot;}&quot;;
+RecordType: Box&lt;ast::TypeExpr&gt; = {
+    Spanned&lt;RecordTypeSub&gt; =&gt; {
+        let ((ext, fields), span) = &lt;&gt;;
+        Box::new(ast::TypeExpr::Record(ext, fields, span))
+    }
+}
+</span></code></pre>
+<p>在类型检查器中，我们像往常一样解析每个字段（以及通配符，如果存在的话）的子类型签名，并从中创建记录值类型来返回。用类型侧比较复杂 - 对于每个（字段、类型签名）对，我们用该字段和解析后的用类型创建记录用类型，然后取所有这些用类型的交集并返回。</p>
+<p>如果存在通配符，我们将其用类型也添加到交集中。例如，在类似 <code>(expr: {T with foo: int; bar: bool})</code> 这样的类型注解中，<code>T</code> 被解析为产生类型对 <code>(V, U)</code>，我们从 <code>expr</code> 的推断类型添加一个到 <code>U</code> 的流约束，和到 <code>{foo: int}</code> 和 <code>{bar: bool}</code> 一样。（或者更具体地说，我们创建交集类型 <code>U &amp; {foo: int} &amp; {bar: bool}</code>，然后向其添加流约束。）</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">Record(ext, fields, span) =&gt; {
+    </span><span style="color:#b48ead;">let </span><span style="color:#c0c5ce;">(utype_value, utype) = engine.</span><span style="color:#96b5b4;">var</span><span style="color:#c0c5ce;">();
+
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> vtype_wildcard = </span><span style="color:#b48ead;">if let </span><span style="color:#c0c5ce;">Some(ext) = ext {
+        </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> ext_type = </span><span style="color:#96b5b4;">parse_type</span><span style="color:#c0c5ce;">(engine, bindings, ext)?;
+        engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(utype_value, ext_type.</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">)?;
+        Some(ext_type.</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">)
+    } </span><span style="color:#b48ead;">else </span><span style="color:#c0c5ce;">{
+        None
+    };
+
+    </span><span style="color:#b48ead;">let mut</span><span style="color:#c0c5ce;"> vtype_fields = Vec::new();
+
+    </span><span style="color:#b48ead;">for </span><span style="color:#c0c5ce;">((name, name_span), wrapped_expr) in fields {
+        </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> wrapped_type = </span><span style="color:#96b5b4;">parse_type</span><span style="color:#c0c5ce;">(engine, bindings, wrapped_expr)?;
+
+        </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> obj_use = engine.</span><span style="color:#96b5b4;">obj_use</span><span style="color:#c0c5ce;">((name.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">(), wrapped_type.</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">), *name_span);
+        engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(utype_value, obj_use)?;
+        vtype_fields.</span><span style="color:#96b5b4;">push</span><span style="color:#c0c5ce;">((name.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">(), wrapped_type.</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">));
+    }
+
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> vtype = engine.</span><span style="color:#96b5b4;">obj</span><span style="color:#c0c5ce;">(vtype_fields, vtype_wildcard, *span);
+    Ok((vtype, utype))
+}
+</span></code></pre><h3 id="ding-he-di-lei-xing">顶和底类型</h3>
+<p>如前所述，我们的类型注释语法被限制在可以同时映射到值类型和用类型的类型上，以减少啰嗦，避免程序员的混淆。这样做的主要效果是在类型签名中不允许联合类型和交集类型，只有少数特定的例外（<code>number = int | float</code>, <code>T? = T | null</code> 等等）。</p>
+<p>乍一看，这似乎是一个严重的限制。例如，假设你有一个函数，它可以返回 <code>int</code> <em>或</em> <code>bool</code>。当 <code>int | bool</code> 不被允许时，你将如何给它一个类型注释？关键的见解是，虽然编译器在内部跟踪这个值可能是整型或布尔型的事实，但程序员没有办法实际观察到这一点。从程序员的角度来看，<em>唯一重要的值类型是可以由某些用类型区分的值类型</em>，反之亦然。</p>
+<p>例如，如果你拿着那个 <code>int | bool</code> 的值，并试图使用它，你会发现，除了可以做无论什么类型的任何值都可以做的事情外，你实际上不能用它做任何事情。如果你试图相加它，你会得到一个错误，因为布尔不能被相加。如果你试图将它用作 <code>if</code> 条件，你会得到一个错误，因为整型不是有效的条件，只有布尔才是。</p>
+<p>从程序员的角度来看，没有办法将这个值的类型与诸如 <code>string | float</code> 类型的值，甚至 <code>{a:int} | (bool -&gt; bool)</code> 类型的值区分开来。他们只知道有一个值，这个值没有允许的类型特定操作。（好吧，错误信息显然会有所不同，但它们可以被使用的实际程序集是一样的。它们是<em>上下文相等的</em>。)</p>
+<p>顺便说一下，这就是我们之前必须定义 <code>number</code> 和 <code>T?</code> 类型的原因。类型 <code>int | float</code> 的值是<em>可以</em>区分的，因为你可以用比较运算符(<code>a &lt; b</code>)来使用它，不像类型 <code>int | bool</code> 的值。不用说，这在很大程度上取决于你实现的类型系统的细节。如果你添加了一些同时接受整型和布尔型的用类型（也许你喜欢使用整型作为 if 条件，C 风格），那么突然间 <code>int | bool</code> 就可以区分了，你需要在类型注释语法中处理它。</p>
+<p>因此，除了已经讨论过的特殊情况外，我们不需要在注释语法中支持联合和交集类型。然而，我们仍然需要<em>某种</em>方法来注释含有像 <code>int | bool</code> 这样不可用类型的表达式的类型。答案是添加两个特殊的新基础类型：<code>top</code> 和 <code>bot</code>。</p>
+<p><code>top</code> 是所有类型的超类型。它表示一个可以是任何类型的值，因此没有支持的操作（除了像 <code>==</code> 这样接受任何类型的操作）。</p>
+<p><code>bot</code> 正好相反 - 是所有类型的<em>子</em>类型。它表示一个是<em>所有</em>类型的值，因此可以用于<em>任何</em>操作。由于没有值具有所有类型，这意味着不可能真正构造 <code>bot</code> 类型的值。<code>bot</code> 的用处主要是表示不可能调用的函数的参数类型（因为不可能产生 <code>bot</code> 值来调用它们），或者表示永远不会返回的函数的返回类型。</p>
+<p>这也是为什么要用 <code>top</code> 来输入前面提到的空记录。一个有字段的记录可以通过访问这些字段来区分，但是（在 cubiml 当前实现中）仅仅基于空记录是一个记录的事实，你实际上无法对它做什么。没有用类型会关心独立于字段的记录。从程序员的角度来看，一个空记录可能就是一个 <code>int | bool</code>。</p>
+<h3 id="case-lei-xing">Case 类型</h3>
+<p>像往常一样，case 类型是记录的对偶 - 它们非常相似，只是极性相反。然而，有两个明显的区别 - 首先是语法明显不同，其次，case 类型现在支持条件流，这在记录类型中是没有对应的。</p>
+<p>首先，语法。遵循 Ocaml，case 类型对于可能标签的固定列表的写法是这样的 <code>[`Tag1 of int | `Tag2 of bool]</code>。如果你想包含一些标签，加上没有提到的可能的任何数量的标签，你可以写成 <code>[_ | `Tag1 of int | `Tag2 of bool]</code>。与记录通配符一样，对于语法来说，开头的 <code>_</code> 可以是任何类型，但只有当它是占位符时才有意义。</p>
+<pre style="background-color:#2b303b;">
+<code><span style="color:#c0c5ce;">CaseTypeExtension = &lt;Type&gt; &quot;|&quot;;
+VariantType = &lt;Spanned&lt;Tag&gt;&gt; &quot;of&quot; &lt;NoFunType&gt;;
+CaseTypeSub = &quot;[&quot; &lt;CaseTypeExtension?&gt; &lt;SepList&lt;VariantType, &quot;|&quot;&gt;&gt; &quot;]&quot;;
+CaseType: Box&lt;ast::TypeExpr&gt; = {
+    Spanned&lt;CaseTypeSub&gt; =&gt; {
+        let ((ext, cases), span) = &lt;&gt;;
+        Box::new(ast::TypeExpr::Case(ext, cases, span))
+    }
+}
+</span></code></pre>
+<p>接下来，就是如何处理条件流的问题了。回想一下，条件流开启了<em>存在多态</em>，即在存在或不存在类型的情况下，类型都是多态的。然而，在单态代码中，条件流实际上并没有什么用处，因为你可以直接删除死代码来达到同样的效果。</p>
+<p>幸运的是，我们的类型注释只处理单态类型，所以根本不需要担心存在多态。类型构造器仍然需要我们为条件流提供一个类型对，所以只需要为此创建一个虚变量。除此之外，代码和记录类型的代码是一样的，只是极性反转了。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">Case(ext, cases, span) =&gt; {
+    </span><span style="color:#65737e;">// Create a dummy variable to use as the lazy flow values
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> dummy = engine.</span><span style="color:#96b5b4;">var</span><span style="color:#c0c5ce;">();
+    </span><span style="color:#b48ead;">let </span><span style="color:#c0c5ce;">(vtype, vtype_bound) = engine.</span><span style="color:#96b5b4;">var</span><span style="color:#c0c5ce;">();
+
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> utype_wildcard = </span><span style="color:#b48ead;">if let </span><span style="color:#c0c5ce;">Some(ext) = ext {
+        </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> ext_type = </span><span style="color:#96b5b4;">parse_type</span><span style="color:#c0c5ce;">(engine, bindings, ext)?;
+        engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(ext_type.</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">, vtype_bound)?;
+        Some((ext_type.</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">, dummy))
+    } </span><span style="color:#b48ead;">else </span><span style="color:#c0c5ce;">{
+        None
+    };
+
+    </span><span style="color:#b48ead;">let mut</span><span style="color:#c0c5ce;"> utype_case_arms = Vec::new();
+    </span><span style="color:#b48ead;">for </span><span style="color:#c0c5ce;">((tag, tag_span), wrapped_expr) in cases {
+        </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> wrapped_type = </span><span style="color:#96b5b4;">parse_type</span><span style="color:#c0c5ce;">(engine, bindings, wrapped_expr)?;
+
+        </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> case_value = engine.</span><span style="color:#96b5b4;">case</span><span style="color:#c0c5ce;">((tag.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">(), wrapped_type.</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">), *tag_span);
+        engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(case_value, vtype_bound)?;
+        utype_case_arms.</span><span style="color:#96b5b4;">push</span><span style="color:#c0c5ce;">((tag.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">(), (wrapped_type.</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">, dummy)));
+    }
+
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> utype = engine.</span><span style="color:#96b5b4;">case_use</span><span style="color:#c0c5ce;">(utype_case_arms, utype_wildcard, *span);
+    Ok((vtype, utype))
+}
+</span></code></pre><h3 id="di-gui-lei-xing">递归类型</h3>
+<p>类型注释已经基本完成，但还有一种情况需要处理 - 递归类型。有时，从自身的角度定义类型是很有用的。例如，考虑以下创建了一个简单递归链表的代码。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#b48ead;">let rec </span><span style="color:#8fa1b3;">build_list </span><span style="color:#c0c5ce;">= </span><span style="color:#b48ead;">fun </span><span style="color:#bf616a;">n </span><span style="color:#c0c5ce;">-&gt;
+    </span><span style="color:#b48ead;">if</span><span style="color:#c0c5ce;"> n &lt; </span><span style="color:#d08770;">0 </span><span style="color:#b48ead;">then
+</span><span style="color:#c0c5ce;">        null
+    </span><span style="color:#b48ead;">else
+        </span><span style="color:#c0c5ce;">{val=n; next=build_list (n - </span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">)};
+
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">list </span><span style="color:#c0c5ce;">= (build_list </span><span style="color:#d08770;">4 </span><span style="color:#c0c5ce;">:</span><span style="color:#b48ead;"> (* what goes here??? *</span><span style="color:#c0c5ce;">))
+</span></code></pre>
+<p>事实证明，用目前定义的语法是不可能写出这个表达式的。<code>build_list</code> 函数要么返回 <code>null</code>，要么返回包含整型值和指向另一个列表节点（可能是空）的指针的列表节点。在伪代码中，我们可以将其定义为类似于 <code>type list = null | {val: int; next=list}</code> 的东西，其中的 <code>list</code> 类型是从自身角度定义的。</p>
+<p>递归类型的实际语法类似，但工作方式略有不同。它由两部分组成。首先，你可以通过写 <code>T as 'name</code> 来<em>别名</em>一个类型，这就定义了一个等于 <code>T</code> 的类型变量 <code>'name</code>。然后，你可以通过名字来使用<em>类型变量</em>，如，写做 <code>'name</code>。使用这种语法，我们现在可以像这样写出上面的列表示例。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#b48ead;">let </span><span style="color:#bf616a;">list </span><span style="color:#c0c5ce;">= (build_list </span><span style="color:#d08770;">4 </span><span style="color:#c0c5ce;">:</span><span style="color:#b48ead;"> {val: int; next: &#39;list}? as &#39;list</span><span style="color:#c0c5ce;">)
+</span></code></pre>
+<p>像往常一样，我们从语法开始。在这种情况下，它只是两个简单的规则。</p>
+<pre style="background-color:#2b303b;">
+<code><span style="color:#c0c5ce;">&lt;NoFunType&gt; &quot;as&quot; &lt;Spanned&lt;TypeVar&gt;&gt; =&gt; Box::new(ast::TypeExpr::Alias(&lt;&gt;)),
+Spanned&lt;TypeVar&gt; =&gt; Box::new(ast::TypeExpr::TypeVar(&lt;&gt;)),
+</span></code></pre>
+<p>然而将它添加到类型检查器中却需要进行较大的重构。眼尖的人可能已经注意到，我之前将类型解析函数定义为 <code>parse_type_signature</code>，但每当一个类型签名需要递归解析另一个类型时，它反而会调用 <code>parse_type</code>，此外使用了一个添加的神秘的 <code>bindings</code> 参数。</p>
+<p>这样做是因为现在类型解析需要跟踪类型变量定义集和它们对应的类型对。为了简化事情，我们禁止对类型变量进行遮蔽或重定义，所以可以使用简单的 <code>HashMap</code> 来跟踪这些。</p>
+<p><code>parse_type_signature</code> 是解析类型签名的顶层函数。它创建类型变量绑定的空映射，然后用它调用 <code>parse_type</code>。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#b48ead;">fn </span><span style="color:#8fa1b3;">parse_type_signature</span><span style="color:#c0c5ce;">(</span><span style="color:#bf616a;">engine</span><span style="color:#c0c5ce;">: &amp;</span><span style="color:#b48ead;">mut</span><span style="color:#c0c5ce;"> TypeCheckerCore, </span><span style="color:#bf616a;">tyexpr</span><span style="color:#c0c5ce;">: &amp;ast::TypeExpr) -&gt; Result&lt;(Value, Use)&gt; {
+    </span><span style="color:#b48ead;">let mut</span><span style="color:#c0c5ce;"> bindings = HashMap::new();
+    </span><span style="color:#96b5b4;">parse_type</span><span style="color:#c0c5ce;">(engine, &amp;</span><span style="color:#b48ead;">mut</span><span style="color:#c0c5ce;"> bindings, tyexpr)
+}
+</span></code></pre>
+<p><code>parse_type</code> 又是递归函数，我们之前讨论的所有代码其实都在这里。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#b48ead;">fn </span><span style="color:#8fa1b3;">parse_type</span><span style="color:#c0c5ce;">(
+    </span><span style="color:#bf616a;">engine</span><span style="color:#c0c5ce;">: &amp;</span><span style="color:#b48ead;">mut</span><span style="color:#c0c5ce;"> TypeCheckerCore,
+    </span><span style="color:#bf616a;">bindings</span><span style="color:#c0c5ce;">: &amp;</span><span style="color:#b48ead;">mut </span><span style="color:#c0c5ce;">HashMap&lt;String, ((Value, Use), Span)&gt;,
+    </span><span style="color:#bf616a;">tyexpr</span><span style="color:#c0c5ce;">: &amp;ast::TypeExpr,
+) -&gt; Result&lt;(Value, Use)&gt; {
+    </span><span style="color:#b48ead;">use </span><span style="color:#c0c5ce;">ast::TypeExpr::*;
+    </span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> tyexpr {
+        Alias(lhs, (name, span)) =&gt; </span><span style="color:#65737e;">// ...
+</span><span style="color:#c0c5ce;">        Case(ext, cases, span) =&gt; </span><span style="color:#65737e;">// ...
+</span><span style="color:#c0c5ce;">        Func(((lhs, rhs), span)) =&gt; </span><span style="color:#65737e;">// ...
+</span><span style="color:#c0c5ce;">        Ident((s, span)) =&gt; </span><span style="color:#65737e;">// ...
+</span><span style="color:#c0c5ce;">        Nullable(lhs, span) =&gt; </span><span style="color:#65737e;">// ...
+</span><span style="color:#c0c5ce;">        Record(ext, fields, span) =&gt; </span><span style="color:#65737e;">// ...
+</span><span style="color:#c0c5ce;">        Ref(lhs, (rw, span)) =&gt; </span><span style="color:#65737e;">// ...
+</span><span style="color:#c0c5ce;">        TypeVar((name, span)) =&gt; </span><span style="color:#65737e;">// ...
+    </span><span style="color:#c0c5ce;">}
+}
+</span></code></pre>
+<p>现在，<code>bindings</code> 参数已经通过线程，我们只需要定义 <code>Alias</code> 和 <code>TypeVar</code> 的解析代码。我们将从后面的开始。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">TypeVar((name, span)) =&gt; {
+    </span><span style="color:#b48ead;">if let </span><span style="color:#c0c5ce;">Some((res, _)) = bindings.</span><span style="color:#96b5b4;">get</span><span style="color:#c0c5ce;">(name.</span><span style="color:#96b5b4;">as_str</span><span style="color:#c0c5ce;">()) {
+        Ok(*res)
+    } </span><span style="color:#b48ead;">else </span><span style="color:#c0c5ce;">{
+        Err(SyntaxError::new1(
+            format!(&quot;</span><span style="color:#a3be8c;">SyntaxError: Undefined type variable </span><span style="color:#d08770;">{}</span><span style="color:#c0c5ce;">&quot;, name),
+            *span,
+        ))
+    }
+}
+</span></code></pre>
+<p>我们只需在 <code>bindings</code> 映射中查找变量名，并返回其对应的类型对，如果变量没有定义，则返回错误。很标准。</p>
+<p>接下来，是 <code>Alias</code> 的情况。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">Alias(lhs, (name, span)) =&gt; {
+    </span><span style="color:#b48ead;">let </span><span style="color:#c0c5ce;">(utype_value, utype) = engine.</span><span style="color:#96b5b4;">var</span><span style="color:#c0c5ce;">();
+    </span><span style="color:#b48ead;">let </span><span style="color:#c0c5ce;">(vtype, vtype_bound) = engine.</span><span style="color:#96b5b4;">var</span><span style="color:#c0c5ce;">();
+
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> old = bindings.</span><span style="color:#96b5b4;">insert</span><span style="color:#c0c5ce;">(name.</span><span style="color:#96b5b4;">to_string</span><span style="color:#c0c5ce;">(), ((utype_value, vtype_bound), *span));
+    </span><span style="color:#b48ead;">if let </span><span style="color:#c0c5ce;">Some((_, old_span)) = old {
+        </span><span style="color:#b48ead;">return </span><span style="color:#c0c5ce;">Err(SyntaxError::new2(
+            format!(&quot;</span><span style="color:#a3be8c;">SyntaxError: Redefinition of type variable &#39;</span><span style="color:#d08770;">{}</span><span style="color:#c0c5ce;">&quot;, name),
+            *span,
+            &quot;</span><span style="color:#a3be8c;">Note: Type variable was already defined here</span><span style="color:#c0c5ce;">&quot;,
+            old_span,
+        ));
+    }
+
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> lhs_type = </span><span style="color:#96b5b4;">parse_type</span><span style="color:#c0c5ce;">(engine, bindings, lhs)?;
+    engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(lhs_type.</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">, vtype_bound)?;
+    engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(utype_value, lhs_type.</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">)?;
+    Ok((vtype, utype))
+}
+</span></code></pre>
+<p>由于别名和类型变量的整个目的是为了启用递归类型，我们需要在知道相应别名的完整类型之前允许用类型变量。处理这个问题的方式与之前处理类型检查 <code>let rec</code> 表达式的方式大致相同。当输入别名类型时，我们在求值别名类型的<em>主体之前</em>，在绑定映射中为该变量名创建一个临时变量来存储。然后，在求值完主体并得到一个类型对<em>之后</em>，从该类型对添加一个流边到之前定义的临时变量中，以关闭循环。</p>
+<p>最后，如果变量已经在 <code>bindings</code> 中定义，我们也会返回错误。为此，我们在绑定中为每个变量存储一个 <code>Span</code> 以及它的 <code>(Value，Use)</code> 类型对，这样在需要显示错误信息时，就有跨度指向之前的定义。</p>
+<p>请注意，与程序表达式不同，类型变量没有作用域，以保持简单（或者更准确地说，它们的作用域限制在它们出现的类型注释中）。类型注解通常比程序更简单，更小，所以缺乏作用域不太可能是一个问题。如果你确实发现自己在处理巨大的类型注释，你可能应该添加某种可重用的类型声明语法，在这种情况下，你无论如何都要对设计进行更大的修改。</p>
+<p>无论如何，我们现在已经完成了在 cubiml 中实现类型注释的工作! 万岁! 至少对于单态类型来说是这样 ...</p>
+<h2 id="duo-tai-lei-xing-zhu-shi">多态类型注释</h2>
+<p>目前为止，我们一直关注于<em>单态</em>类型的类型注释。然而，有了 let 多态性，变量可以是多态性<em>类型方案</em>的类型，如果我们也有办法手动注释类型方案，那就更好了。遗憾是，这有多个问题。</p>
+<p>首先是语法。对于单态类型来说，没有必要支持显式的联合或交集类型，因为它们总是可以被简化掉，但是对于多态类型来说就不是这样了，所以你需要以某种方式支持它们。</p>
+<p>与其支持显式的交集和联合，不如考虑将它们隐藏在约束语法之后。例如，与其使用 <code>forall T =&gt; (T &amp; {x: int}) -&gt; T</code> 这样的语法，不如使用 <code>forall T =&gt; T -&gt; T where T &lt;: {x: int}</code> 这样的，从类型的角度看是等价的，但对用户来说可能更直观。</p>
+<p>然而，一个更严重的问题是实现的复杂性，在两个意义上都是。对于单态类型，我们可以离开复杂性，把每个类型注解当作 <code>(Value, Use)</code> 对，只需添加 <code>v &lt; u</code> 约束来验证类型，这已经得到了类型系统的支持。然而，类型<em>方案</em>之间并没有这样的东西作为流约束。</p>
+<p>当涉及到类型方案时，我们不是简单地添加流约束，而是要决定<em>类型归并</em>，这涉及到更多的问题。基本上，类型归并意味着寻找两个多态（值）类型方案，并决定一个是否<em>归并了</em>另一个，即，在后面的绑定类型变量的任何可能实例中，一个是否为另一个的子类型。</p>
+<p>由于我们的类型被表示为（可能是循环的）<em>图</em>，检查归并涉及到将每个类型图转换为规范形式，然后试图在规范图中找到变量之间的映射，并在相应图中检查每对节点之间的子类型。</p>
+<p>遗憾是，在最坏的情况下，规范形式可能是指数级的大，这意味着检查类型归并需要指数级的时间。而且即使不是因为时间复杂度，<em>代码</em>复杂度也是相当可怕的 - 为了实现这个，我很可能要花几周的时间才能涵盖所需的所有代码变化。因此，我不打算在 cubiml 中涵盖类型归并检查。</p>
+<h2 id="zong-jie">总结</h2>
+<p>这标志着我为 cubiml 计划的话题到此为止。如果你还有什么想让我讲的，欢迎在 Reddit 上评论。否则，这将是这个系列的最后一篇文章。我希望这篇文章能被证明有助于演示如何在新语言中实现类型推理，以及子类型推理在编程和语言设计中开启一些可能性。</p>
+
+    </div>
+
+
+</article>
+
+
+        </main>
+        <footer>
+            <p>
+                © 2021 firecodelab.com
+            </p>
+            <p>
+                
+                
+            </p>
+        </footer>
+    </div>
+</body>
+</html>

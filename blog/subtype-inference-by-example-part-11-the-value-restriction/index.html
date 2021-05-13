@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="zh-cn">
+<head>
+    <meta charset="utf-8">
+    <meta name="HandheldFriendly" content="True">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="referrer" content="no-referrer-when-downgrade">
+
+    <title>[译]通过例子学子类型推理（十一）：值限制和多态递归</title>
+    <meta name="description" content="">
+
+    <link rel="stylesheet" href="https:&#x2F;&#x2F;firecodelab.com&#x2F;main.css">
+
+    
+
+    
+    
+</head>
+<body>
+    <a class="skip-main" href="#main">Skip to content</a>
+    <div class="container">
+        <header>
+            <h1 class="site-header">
+                <a href="https:&#x2F;&#x2F;firecodelab.com">Fire Code</a>
+            </h1>
+            <nav>
+                
+                
+                
+                <a  href="&#x2F;blog&#x2F;">博客</a>
+                
+                
+                <a  href="&#x2F;about&#x2F;">关于</a>
+                
+                
+            </nav>
+        </header>
+        <main id="main" tabindex="-1">
+            
+
+<article class="post">
+    <header>
+        <h1>[译]通过例子学子类型推理（十一）：值限制和多态递归</h1>
+    </header>
+
+    
+    <div class="article-info">
+        
+        <div class="article-date">2021-04-11</div>
+        
+        <div class="article-taxonomies">
+            
+                <ul class="article-tags">
+                    
+                    <li><a href="https://firecodelab.com/tags/translate/">#translate</a></li>
+                    
+                    <li><a href="https://firecodelab.com/tags/compiler/">#compiler</a></li>
+                    
+                    <li><a href="https://firecodelab.com/tags/type-inference/">#type inference</a></li>
+                    
+                </ul>
+            
+        </div>
+        
+        <div class="article-original">[<a href="https:&#x2F;&#x2F;blog.polybdenum.com&#x2F;2020&#x2F;09&#x2F;19&#x2F;subtype-inference-by-example-part-11-the-value-restriction.html" target="_blank">view original</a>]</div>
+        
+    </div>
+
+
+    <div class="content">
+        <p>在<a href="/blog/subtype-inference-by-example-part-10-let-polymorphism">上一篇</a>中，我们介绍了<em>let 多态</em>的一个非常基本的实现，它允许 let-bound 函数在每个调用点以不同的类型被调用。遗憾的是，它与可变结合起来还不健全。今天，我们将看到如何使用<em>值限制</em>来修复不健全性。</p>
+<h2 id="zhi-xian-zhi">值限制</h2>
+<p>回顾下面的例子，它错误地通过了类型检查器并在运行时崩溃。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#b48ead;">let </span><span style="color:#bf616a;">p </span><span style="color:#c0c5ce;">= </span><span style="color:#b48ead;">ref </span><span style="color:#c0c5ce;">(</span><span style="color:#b48ead;">fun </span><span style="color:#bf616a;">x </span><span style="color:#c0c5ce;">-&gt; x);
+</span><span style="color:#65737e;">(* 42 是可调用的函数，对吧？ *)
+</span><span style="color:#c0c5ce;">p := </span><span style="color:#d08770;">42</span><span style="color:#c0c5ce;">;
+!p &quot;</span><span style="color:#a3be8c;">arg</span><span style="color:#c0c5ce;">&quot;
+</span></code></pre><pre style="background-color:#2b303b;">
+<code><span style="color:#c0c5ce;">An error occurred during evaluation in the repl: TypeError: $.v0.$p is not a function
+</span></code></pre>
+<p>问题在于，在类型检查器中，每当变量被引用时，我们都会把 <code>let</code> 表达式当作重复主体，但在编译后的代码中只输出一个副本。这对不可变的代码有效，但对包含引用的代码无效，因为底层代码创建了<em>单一</em>引用，被该变量的所有使用共享。为了解决这个问题，我们需要确保引用类型总是共享，而不是重复的。</p>
+<p>让事情变得更加复杂的是，<em>总是</em>强制引用是单态的是不可取的。考虑下面的例子。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#b48ead;">let </span><span style="color:#bf616a;">id </span><span style="color:#c0c5ce;">= fun x -&gt;
+    </span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">temp </span><span style="color:#c0c5ce;">= </span><span style="color:#b48ead;">ref</span><span style="color:#c0c5ce;"> x </span><span style="color:#b48ead;">in
+        </span><span style="color:#c0c5ce;">!temp;
+
+(id </span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">) + </span><span style="color:#d08770;">3</span><span style="color:#c0c5ce;">;
+(id &quot;</span><span style="color:#a3be8c;">x</span><span style="color:#c0c5ce;">&quot;) ^ &quot;</span><span style="color:#a3be8c;">y</span><span style="color:#c0c5ce;">&quot;;
+</span></code></pre>
+<p>引用的使用是新 <code>id</code> 函数的实现细节，我们不希望它妨碍 <code>id</code> 的多态性。事实上，在这种情况下，让 <code>id</code> 多态是安全的，因为对 <code>id</code> 函数的每次调用都会在运行时生成<em>新</em>引用，所以 <code>id 1</code> 和 <code>id &quot;x&quot;</code> 的调用根本没有共享可变状态。</p>
+<p>为了解决这个问题，SML 引入了<em>值限制</em>。这基本上说明，只有当 let-bound 变量定义中的所有引用和函数调用都出现在函数定义内部时，才应该使其多态化。</p>
+<p>在值限制之前，SML 使用了一个复杂得多的系统，试图跟踪哪些函数可能包含可变状态。然而，这很复杂，而且容易出错，并导致不理想的限制，如上所示。值限制基本上是举起手来，假设<em>任何</em>函数都有可能泄露可变状态，而限制函数<em>调用</em>。</p>
+<p>基本上，任何引用的“裸露”使用（或函数调用，在这个系统中被认为等同于引用）都会强制单态化。然而，如果这些引用或函数调用通过出现在函数定义内部而受到“保护”，那么使该函数多态化是可以的，因为每当调用该函数时，该函数的主体都会被重新执行，并根据适用情况创建新引用。</p>
+<h3 id="shi-xian-zhi-xian-zhi">实现值限制</h3>
+<p>现在，我们不会费心去实现完全的值限制，因为这需要编写一套新的 AST 遍历代码来递归检查引用和函数调用的存在。相反，我们将采用保守的近似方法，只对右边是函数定义的 let 变量直接进行泛化，用 5% 的努力实现 let 多态 95% 的用例。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#b48ead;">fn </span><span style="color:#8fa1b3;">check_let</span><span style="color:#c0c5ce;">(</span><span style="color:#bf616a;">engine</span><span style="color:#c0c5ce;">: &amp;</span><span style="color:#b48ead;">mut</span><span style="color:#c0c5ce;"> TypeCheckerCore, </span><span style="color:#bf616a;">bindings</span><span style="color:#c0c5ce;">: &amp;</span><span style="color:#b48ead;">mut</span><span style="color:#c0c5ce;"> Bindings, </span><span style="color:#bf616a;">expr</span><span style="color:#c0c5ce;">: &amp;ast::Expr) -&gt; Result&lt;Scheme&gt; {
+    </span><span style="color:#b48ead;">if let </span><span style="color:#c0c5ce;">ast::Expr::FuncDef(..) = expr {
+        </span><span style="color:#65737e;">// Right hand side is a function definition - ok to make it polymorphic
+        </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> saved_bindings = RefCell::new(Bindings {
+            m: bindings.m.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">(),
+            changes: Vec::new(),
+        });
+        </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> saved_expr = expr.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">();
+
+        </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> f: Rc&lt;dyn Fn(&amp;</span><span style="color:#b48ead;">mut</span><span style="color:#c0c5ce;"> TypeCheckerCore) -&gt; Result&lt;Value&gt;&gt; =
+            Rc::new(</span><span style="color:#b48ead;">move </span><span style="color:#c0c5ce;">|engine| </span><span style="color:#96b5b4;">check_expr</span><span style="color:#c0c5ce;">(engine, &amp;</span><span style="color:#b48ead;">mut</span><span style="color:#c0c5ce;"> saved_bindings.</span><span style="color:#96b5b4;">borrow_mut</span><span style="color:#c0c5ce;">(), &amp;saved_expr));
+
+        </span><span style="color:#96b5b4;">f</span><span style="color:#c0c5ce;">(engine)?;
+        Ok(Scheme::Poly(f))
+    } </span><span style="color:#b48ead;">else </span><span style="color:#c0c5ce;">{
+        </span><span style="color:#65737e;">// Right hand side is something other than a function definition
+        // treat it monomorphically for now.
+        // TODO - implement the recursive value restriction checks
+        </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> var_type = </span><span style="color:#96b5b4;">check_expr</span><span style="color:#c0c5ce;">(engine, bindings, expr)?;
+        Ok(Scheme::Mono(var_type))
+    }
+}
+</span></code></pre>
+<p>在新 <code>check_let</code> 函数中，我们检查 <code>expr</code> 是否是 <code>FuncDef</code>。如果是，就像以前一样返回多态类型方案。否则，我们只是急切地对主体进行类型检查，并返回单态类型。</p>
+<p>前面的不健全例子现在在编译时导致了类型错误，正如预期的那样。</p>
+<pre style="background-color:#2b303b;">
+<code><span style="color:#c0c5ce;">TypeError: Value is required to be a function here,
+(* 42 是可调用的函数，对吧？ *)
+p := 42;
+!p &quot;arg&quot;
+^~
+But that value may be a integer originating here.
+let p = ref (fun x -&gt; x);
+(* 42 是可调用的函数，对吧？ *)
+p := 42;
+     ^~
+!p &quot;arg&quot;
+</span></code></pre><h2 id="duo-tai-di-gui">多态递归</h2>
+<p>现在我们已经解决了常规 <code>let</code> 表达式的问题，现在是时候为 <code>let rec</code> 添加多态了。回想一下，我们对 <code>let rec</code> 定义进行类型检查的方式是创建一个类型变量，将其添加到环境中，用该环境对定义的右侧进行类型检查，然后从该结果中向原始变量添加流约束。</p>
+<p>使用临时类型变量似乎可以防止我们推导出 <code>let rec</code> 表达式的多态方案。事实上，<code>let rec</code>-bound 变量在其自身定义的范围内确实必须是单态的。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#b48ead;">let rec </span><span style="color:#8fa1b3;">id </span><span style="color:#c0c5ce;">= </span><span style="color:#b48ead;">fun </span><span style="color:#bf616a;">x </span><span style="color:#c0c5ce;">-&gt;
+    </span><span style="color:#65737e;">(* id 在这里需要时单态的 *)
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> _ = (id </span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">) + </span><span style="color:#d08770;">3 </span><span style="color:#b48ead;">in
+    </span><span style="color:#65737e;">(* 所以这导致了类型错误 *)
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> _ = (id &quot;</span><span style="color:#a3be8c;">x</span><span style="color:#c0c5ce;">&quot;) ^ &quot;</span><span style="color:#a3be8c;">y</span><span style="color:#c0c5ce;">&quot; </span><span style="color:#b48ead;">in
+</span><span style="color:#c0c5ce;">    x;
+</span></code></pre>
+<p>例如，上面的代码使用 <code>let rec</code> 定义了普通的恒等函数 <code>id</code>，只是 <code>id</code> 函数也用不同的类型调用自己。由于 <code>id</code> 只是在求值定义时被设置为（单态）类型变量，这必然会导致类型错误。</p>
+<pre style="background-color:#2b303b;">
+<code><span style="color:#c0c5ce;">TypeError: Value is required to be a string here,
+    let _ = (id 1) + 3 in
+    (* 所以这导致了类型错误 *)
+    let _ = (id &quot;x&quot;) ^ &quot;y&quot; in
+            ^~~~~~~~
+    x;
+
+But that value may be a integer originating here.
+let rec id = fun x -&gt;
+    (* id 在这里需要时单态的 *)
+    let _ = (id 1) + 3 in
+                ^
+    (* 所以这导致了类型错误 *)
+    let _ = (id &quot;x&quot;) ^ &quot;y&quot; in
+</span></code></pre>
+<p>这不仅是我们所使用的算法的产物，而是基本限制。允许<em>多态递归</em>，即允许递归函数用不同的类型调用自己，这使得类型推导无法确定，无论使用什么算法。</p>
+<p>然而，并没有这样的问题阻止我们在其定义<em>之外</em>为 <code>let rec</code>-bound 变量推导一个方案。例如，考虑以下愚蠢的递归 <code>id</code> 的实现。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#b48ead;">let rec </span><span style="color:#8fa1b3;">id </span><span style="color:#c0c5ce;">=
+    </span><span style="color:#b48ead;">fun </span><span style="color:#bf616a;">x </span><span style="color:#c0c5ce;">-&gt;
+        </span><span style="color:#b48ead;">if </span><span style="color:#d08770;">true </span><span style="color:#b48ead;">then
+</span><span style="color:#c0c5ce;">            x
+        </span><span style="color:#b48ead;">else
+            </span><span style="color:#65737e;">(* id 在这里是单态的 *)
+</span><span style="color:#c0c5ce;">            id(x);
+
+</span><span style="color:#65737e;">(* 但在这里让 id 多态是安全的
+    现在我们已经完成了对其定义的类型检查 *)
+</span><span style="color:#c0c5ce;">(id </span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">) + </span><span style="color:#d08770;">3</span><span style="color:#c0c5ce;">;
+(id &quot;</span><span style="color:#a3be8c;">x</span><span style="color:#c0c5ce;">&quot;) ^ &quot;</span><span style="color:#a3be8c;">y</span><span style="color:#c0c5ce;">&quot;;
+</span></code></pre>
+<p>上述函数基本上等同于普通的、非递归的 <code>id</code> 实现，所以如果我们也能多态地使用它就更好了。幸运的是，可以。诀窍是，一旦对递归定义进行了求值，我们就把它变成多态方案，并<em>替换</em>绑定，把它从单态的临时变量变为结果的多态方案。这样，递归定义之外的任何代码都可以多态地使用它。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#b48ead;">fn </span><span style="color:#8fa1b3;">check_let_rec_defs</span><span style="color:#c0c5ce;">(
+    </span><span style="color:#bf616a;">engine</span><span style="color:#c0c5ce;">: &amp;</span><span style="color:#b48ead;">mut</span><span style="color:#c0c5ce;"> TypeCheckerCore,
+    </span><span style="color:#bf616a;">bindings</span><span style="color:#c0c5ce;">: &amp;</span><span style="color:#b48ead;">mut</span><span style="color:#c0c5ce;"> Bindings,
+    </span><span style="color:#bf616a;">defs</span><span style="color:#c0c5ce;">: &amp;Vec&lt;(String, Box&lt;ast::Expr&gt;)&gt;,
+) -&gt; Result&lt;()&gt; {
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> saved_bindings = RefCell::new(Bindings {
+        m: bindings.m.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">(),
+        changes: Vec::new(),
+    });
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> saved_defs = defs.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">();
+
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> f: Rc&lt;dyn Fn(&amp;</span><span style="color:#b48ead;">mut</span><span style="color:#c0c5ce;"> TypeCheckerCore, </span><span style="color:#b48ead;">usize</span><span style="color:#c0c5ce;">) -&gt; Result&lt;Value&gt;&gt; = Rc::new(</span><span style="color:#b48ead;">move </span><span style="color:#c0c5ce;">|engine, i| {
+        saved_bindings.</span><span style="color:#96b5b4;">borrow_mut</span><span style="color:#c0c5ce;">().</span><span style="color:#96b5b4;">in_child_scope</span><span style="color:#c0c5ce;">(|</span><span style="color:#bf616a;">bindings</span><span style="color:#c0c5ce;">| {
+            </span><span style="color:#b48ead;">let mut</span><span style="color:#c0c5ce;"> temp_vars = Vec::with_capacity(saved_defs.</span><span style="color:#96b5b4;">len</span><span style="color:#c0c5ce;">());
+            </span><span style="color:#b48ead;">for </span><span style="color:#c0c5ce;">(name, _) in &amp;saved_defs {
+                </span><span style="color:#b48ead;">let </span><span style="color:#c0c5ce;">(temp_type, temp_bound) = engine.</span><span style="color:#96b5b4;">var</span><span style="color:#c0c5ce;">();
+                bindings.</span><span style="color:#96b5b4;">insert</span><span style="color:#c0c5ce;">(name.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">(), temp_type);
+                temp_vars.</span><span style="color:#96b5b4;">push</span><span style="color:#c0c5ce;">((temp_type, temp_bound));
+            }
+
+            </span><span style="color:#b48ead;">for </span><span style="color:#c0c5ce;">((_, expr), (_, bound)) in saved_defs.</span><span style="color:#96b5b4;">iter</span><span style="color:#c0c5ce;">().</span><span style="color:#96b5b4;">zip</span><span style="color:#c0c5ce;">(&amp;temp_vars) {
+                </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> var_type = </span><span style="color:#96b5b4;">check_expr</span><span style="color:#c0c5ce;">(engine, bindings, expr)?;
+                engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(var_type, *bound)?;
+            }
+
+            Ok(temp_vars[i].</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">)
+        })
+    });
+    </span><span style="color:#96b5b4;">f</span><span style="color:#c0c5ce;">(engine, </span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">)?;
+
+    </span><span style="color:#b48ead;">for </span><span style="color:#c0c5ce;">(i, (name, _)) in defs.</span><span style="color:#96b5b4;">iter</span><span style="color:#c0c5ce;">().</span><span style="color:#96b5b4;">enumerate</span><span style="color:#c0c5ce;">() {
+        </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> f = f.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">();
+        </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> scheme = Scheme::Poly(Rc::new(</span><span style="color:#b48ead;">move </span><span style="color:#c0c5ce;">|engine| </span><span style="color:#96b5b4;">f</span><span style="color:#c0c5ce;">(engine, i)));
+        bindings.</span><span style="color:#96b5b4;">insert_scheme</span><span style="color:#c0c5ce;">(name.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">(), scheme);
+    }
+    Ok(())
+}
+</span></code></pre>
+<p>像往常一样，由于需要潜在地处理多个相互递归的定义，多态 <code>let rec</code> 的实际实现复杂得可怕。从好的方面看，在这种情况下，我们不必担心值限制，因为在语言语法级别上，之前定义的 <code>let rec</code> 上只允许在右边定义函数。如果你决定放宽这个限制，你需要在这里加回检查。</p>
+<h2 id="fang-kuan-de-zhi-xian-zhi">放宽的值限制</h2>
+<p>事实证明，原来的值限制在 OCaml 中过于繁琐，所以 OCaml 实际上使用了一个稍加修改的变体，叫做<em>放宽的值限制</em>，它接受的程序比经典的值限制更多，同时还能保持合理性。</p>
+<p>然而，事实证明，放宽的值限制基本上只是一个弥补 OCaml 缺乏子类型的 hack。问题源于实际上有些值在有子类型的情况下自然可以被赋予单态类型，但在没有子类型的情况下却需要多态来表达。</p>
+<p>例如，考虑一个通用的不可变列表类型 <code>List[T]</code> 的情况。由于列表是不可变的，所以 <code>T</code> 是协变的，而不是不变的，如<a href="/blog/subtype-inference-by-example-part-8-mutability/">四周前的帖子</a>所述。问题是，<em>空不可变列表的类型是什么</em>？</p>
+<p>空列表应该可以在任何地方使用，包括字符串列表，整型列表，或任何其他类型的列表。使用子类型化，答案很简单。空列表只是拥有有类型 <code>List[Bot]</code>，其中 <code>Bot</code> 是底类型，所有其他类型的子类型。由于协变，这意味着如期望的那样，<code>List[Bot]</code> 对于所有 <code>T</code> 来说都是 <code>List[T]</code> 的子类型，不需要多态。</p>
+<p>然而，如果没有子类型化，这是不可能的。你必须为 <code>T</code> 选择特定值。给空列表的类型为 <code>List[int]</code>，它不能与字符串列表混合，反之亦然。因此，没有子类型化，单态类型对于空列表是没有意义的。相反，你必须给它<em>多态</em>类型方案 <code>forall T =&gt; List[T]</code>。</p>
+<p>遗憾是，这与值限制相结合，使得无法从函数中有用地返回空列表。因此，OCaml 增加了放宽的值限制，它声明，如果产生类型方案的每个类型参数只出现在协变或逆变位置，而不是两者都出现，那么值限制原本禁止其成为多态的表达式仍然可以变成多态。</p>
+<p>然而，这只是可以用子类型化进行单态类型化的类型集合! 纯协变的类型参数可以像上面一样只分配 <code>Bot</code>，而纯逆变的类型参数可以分配 <code>Top</code>，所有类型的<em>超类型</em>。子类型化给我们提供了放宽的值限制，<em>免费</em>。</p>
+<h2 id="xing-neng">性能</h2>
+<p>我们的 let 多态的懒惰实现是非常低效的，因为每次变量被引用时都会递归地重新运行类型检查器。自然，从最坏情况下的运行时复杂度来看，它也是<em>可能最好的</em>。(╯°□°)╯︵ ┻━┻</p>
+<h3 id="ji-suan-fu-za-xing-de-tie-lu">计算复杂性的铁律</h3>
+<p>我喜欢称之为“计算复杂度的铁律”，这是一个有点不直观的观察，即一个算法越强大，它一定越慢，至少在最坏的情况下是这样。假设你在研究某个新问题 <code>FOO</code>，发现 <code>SAT</code>（布尔可满足性，一个出了名的难问题）可以简化为 <code>FOO</code>，这意味着解决 <code>FOO</code> 的算法也可以让你解决 <code>SAT</code>。外行可能会觉得“好消息!只要我们解决了 FOO，也就能解决 SAT 了。这肯定是解决 SAT 路上的一大突破!&quot;而复杂度理论家则会叹息，认为 &quot;Welp，我想也没有希望解决 FOO 了。&quot;</p>
+<p>事实证明，光靠增加额外的间接层是吓唬不了数学的。一个算法在最坏的情况下，至少和它能解决的最难问题所需的时间一样慢。在类型推导的情况下，这意味着类型系统精度（即功率）的每一次提高都是有代价的。</p>
+<p>程序员喜欢强大的类型系统，因为这可以让他们检查代码中更复杂的不变量，但正是这种能力使得类型推理变得更慢。在子类型化的情况下，子类型化所增加的能力意味着从近乎线性时间的类型推理变成了最坏情况下需要立方时间的类型推理（在看似可信的硬性假设下）。从这个角度来看，let 多态确实付出了非常高的代价。let 多态的类型推理需要<em>指数级</em>的时间。</p>
+<h3 id="zhi-shu-ji-fang-da">指数级放大</h3>
+<p>要看到这一点，考虑下面的代码模式。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#b48ead;">let </span><span style="color:#bf616a;">f </span><span style="color:#c0c5ce;">= fun x -&gt; x;
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">f2 </span><span style="color:#c0c5ce;">= fun x -&gt; f (f x);
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">f3 </span><span style="color:#c0c5ce;">= fun x -&gt; f2 (f2 x);
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">f4 </span><span style="color:#c0c5ce;">= fun x -&gt; f3 (f3 x);
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">f5 </span><span style="color:#c0c5ce;">= fun x -&gt; f4 (f4 x);
+</span></code></pre>
+<p><code>f2</code> 调用 <code>f</code> 两次，因此复制 <code>f</code> 类型两次。<code>f3</code> 调用 <code>f2</code> 两次，因此复制 <code>f2</code> 两次，这意味着复制 <code>f</code> <em>四次</em>。然后 <code>f4</code> 将其复制八次，等等，导致指数级爆炸。</p>
+<p>你可能会想，这是否仅仅是目前算法的一个弱点，可以通过充分巧妙的记忆等方式来解决。在上面的玩具例子中，当然可以，因为所有的 f 函数只是简化为 <code>fun x -&gt; x</code>。但在一般情况下，答案是否定的。</p>
+<p>在上面的例子中，<code>f</code> 只是恒等函数，但无论 <code>f</code> 是哪个函数，这个例子都是一样的。如果把 <code>f</code> 换成<em>任意</em>函数，<code>f2</code> 仍然会在其参数上调用 <code>f</code> 两次。那么 <code>f3</code> 调用 <code>f2</code> 两次，相当于调用 <code>f</code> 四次，以此类推。let 多态允许简洁地表达对任意函数的指数级调用次数，<em>每次调用的类型不同</em>。这种简洁性既是它的优点，也是它的致命缺陷。</p>
+<p>特别是，可以写一个函数 <code>f</code>，在<em>类型层面</em>模拟任意图灵机的单独步骤，其中机器的旧的和新的状态被编码在函数的输入和输出类型中。多次调用 <code>f</code> <em>多态地</em>模拟图灵机的多个步骤，所以嵌套的多态 <code>fn</code> 函数的类型检查需要<em>在编译时</em>模拟任意图灵机的 <code>2^n</code> 步骤。由于机器的状态被编码在输出类型中，你可以根据任意图灵机是否在最多 <code>2^n</code> 步中停止，编写类型检查或产生类型错误的代码。因此，在最坏的情况下，无论你的算法多么聪明，都不可能做到比指数时间更好。</p>
+<p>顺便说一下，多态递归允许你用每次调用的不同类型来表达对给定函数的<em>无限次</em>调用，这意味着有限的代码量可以要求在编译时模拟图灵机的无限步。这有助于解释为什么多态递归使得类型推理无法确定。</p>
+<h3 id="you-hua">优化</h3>
+<p>在这个系列中，我刻意避免做任何优化，除非有必要提高最坏情况下的复杂度。主要原因是为了让代码尽可能简单，更容易理解。然而，另一个原因是，最坏情况复杂度是一个客观的衡量标准，而“真实世界性能”是可变的，高度依赖于基准。通常情况下，特定的改变是否会使编译器在实践中变得更快或更慢，完全取决于你在实践中把它用在什么样的代码上。由于缺乏现有的带有子类型的语言，这一点尤其成问题，因为这意味着缺乏用子类型编写的真实世界代码，这使得很难测试和剖析不同的编译器设计。</p>
+<p>话虽如此，如果你想在真实语言中使用它，优化 let 多态的实现是相当重要的，所以我想我至少要总结一下编译器用来让它“在实践中快”的技术。</p>
+<p>最重要的一步是避免每当类型方案实例化时重新运行整个类型检查逻辑。相反，只需运行一次以产生类型图，然后每当方案实例化时，使用新鲜的类型变量复制该图。为了确保合理性，一旦遇到在 <code>let</code> 定义范围外定义的图的部分，一定要停止复制。为了进一步加快速度，你可以将复制限制在两个“端点”都还可达的变量上，并首先应用所有常用的简化技术来减少被复制图的大小。</p>
+<h2 id="jie-lun">结论</h2>
+<p>有了 let 多态，我们现在已经实现了 ML 风格类型推理的所有“基本”功能。<a href="/blog/subtype-inference-by-example-part-12-flow-typing-and-mixed-comparison-operators/">下周</a>，我们将添加更多的独特功能，比如流式类型和混合比较运算符。</p>
+
+    </div>
+
+
+</article>
+
+
+        </main>
+        <footer>
+            <p>
+                © 2021 firecodelab.com
+            </p>
+            <p>
+                
+                
+            </p>
+        </footer>
+    </div>
+</body>
+</html>

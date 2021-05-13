@@ -1,0 +1,603 @@
+<!DOCTYPE html>
+<html lang="zh-cn">
+<head>
+    <meta charset="utf-8">
+    <meta name="HandheldFriendly" content="True">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="referrer" content="no-referrer-when-downgrade">
+
+    <title>[译]通过例子学子类型推理（七）：跨越式错误信息</title>
+    <meta name="description" content="">
+
+    <link rel="stylesheet" href="https:&#x2F;&#x2F;firecodelab.com&#x2F;main.css">
+
+    
+
+    
+    
+</head>
+<body>
+    <a class="skip-main" href="#main">Skip to content</a>
+    <div class="container">
+        <header>
+            <h1 class="site-header">
+                <a href="https:&#x2F;&#x2F;firecodelab.com">Fire Code</a>
+            </h1>
+            <nav>
+                
+                
+                
+                <a  href="&#x2F;blog&#x2F;">博客</a>
+                
+                
+                <a  href="&#x2F;about&#x2F;">关于</a>
+                
+                
+            </nav>
+        </header>
+        <main id="main" tabindex="-1">
+            
+
+<article class="post">
+    <header>
+        <h1>[译]通过例子学子类型推理（七）：跨越式错误信息</h1>
+    </header>
+
+    
+    <div class="article-info">
+        
+        <div class="article-date">2021-04-07</div>
+        
+        <div class="article-taxonomies">
+            
+                <ul class="article-tags">
+                    
+                    <li><a href="https://firecodelab.com/tags/translate/">#translate</a></li>
+                    
+                    <li><a href="https://firecodelab.com/tags/compiler/">#compiler</a></li>
+                    
+                    <li><a href="https://firecodelab.com/tags/type-inference/">#type inference</a></li>
+                    
+                </ul>
+            
+        </div>
+        
+        <div class="article-original">[<a href="https:&#x2F;&#x2F;blog.polybdenum.com&#x2F;2020&#x2F;08&#x2F;15&#x2F;subtype-inference-by-example-part-7-spanned-error-messages.html" target="_blank">view original</a>]</div>
+        
+    </div>
+
+
+    <div class="content">
+        <p><a href="/blog/subtype-inference-by-example-part-6-numeric-types-and-operators">上周</a>，我们介绍了在 Cubiml 中添加字面量和运算符，并展示了该语言的第一个完整演示。然而，编译器虽然可以工作，但对用户并不友好。特别是，当发生类型不匹配时它只是打印出“Unexpected types”，没有细化。本周，我们将改进 cubiml 的错误信息。</p>
+<h2 id="kua-yue-shi-cuo-wu-xin-xi">跨越式错误信息</h2>
+<p>大多数现代编译器已经趋向于<em>跨越式错误信息</em>，也就是显示你的代码并指出与错误相关的特定部分的错误信息。</p>
+<p>例如，这里是 Clang 的<a href="https://clang.llvm.org/diagnostics.html">错误信息示例</a>，Clang 是一个专注于高质量错误信息的 C++ 编译器。</p>
+<pre style="background-color:#2b303b;">
+<code><span style="color:#c0c5ce;">$ clang -fsyntax-only t.c
+t.c:5:11: error: indirection requires pointer operand (&#39;int&#39; invalid)
+ int y = \*SomeA.X;
+ ^~~~~~~~
+</span></code></pre>
+<p>作为另一个例子，这里是 Elm 中典型的编译器错误信息。</p>
+<pre style="background-color:#2b303b;">
+<code><span style="color:#c0c5ce;">\-- TYPE MISMATCH ----------------------------------------------- Jump To Problem The 1st argument to \`NewFace\` is not what I expect:
+
+59|           NewFace Model 1
+                      ^^^^^
+This \`Model\` value is a:
+
+    Int -&gt; Model
+
+But \`NewFace\` needs the 1st argument to be:
+
+    Int
+</span></code></pre>
+<p>cubiml 的早期前身 <a href="https://github.com/Storyyeller/IntercalScript">IntercalScript</a> 也采用了类似的方法:</p>
+<pre style="background-color:#2b303b;">
+<code><span style="color:#c0c5ce;">TypeError: Unexpected bool
+typeck6.ics:26:45: Note: bool originates here
+    if context == null then context = {fut: false, unsafe: false, dead: false} e
+                                            ^----
+typeck6.ics:658:25: but it is required to be an object here
+                fut-span.print(&quot;Note: future assignment begins here&quot;)
+                        ^-----
+</span></code></pre>
+<p>在这篇文章中，我们将看到如何在 cubiml 中实现类似的错误信息。</p>
+<h3 id="kua-du">跨度</h3>
+<p>第一步当然是添加跨度。<em>跨度</em>指的是输入源文件的一些连续的部分。从概念上讲，跨度就是（源文件，开始位置，结束位置）的三连体。在解析输入时，我们将抽象语法树中可能涉及错误的每一部分都关联一个跨度，然后在发生错误时，利用跨度信息打印出格式良好的带代码片段的消息。</p>
+<p>然而，在实现中，我们不实际传递这些三连体，而是将它们隐藏在一个特殊的 <code>SpanManager</code> 类中，以提高关注点的分离，并希望提高性能。<code>SpanManager</code> 类发出不透明的 <code>Span</code> 值，这些值背地里只是进入存储真实数据的管理器的内部列表的一个索引。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">#[</span><span style="color:#bf616a;">derive</span><span style="color:#c0c5ce;">(Copy, Clone, Debug, Eq, PartialEq)]
+</span><span style="color:#b48ead;">pub struct </span><span style="color:#c0c5ce;">Span(</span><span style="color:#b48ead;">usize</span><span style="color:#c0c5ce;">);
+
+#[</span><span style="color:#bf616a;">derive</span><span style="color:#c0c5ce;">(Debug, Default)]
+</span><span style="color:#b48ead;">pub struct </span><span style="color:#c0c5ce;">SpanManager {
+    </span><span style="color:#bf616a;">sources</span><span style="color:#c0c5ce;">: Vec&lt;String&gt;,
+    </span><span style="color:#bf616a;">spans</span><span style="color:#c0c5ce;">: Vec&lt;(</span><span style="color:#b48ead;">usize</span><span style="color:#c0c5ce;">, </span><span style="color:#b48ead;">usize</span><span style="color:#c0c5ce;">, </span><span style="color:#b48ead;">usize</span><span style="color:#c0c5ce;">)&gt;,
+}
+</span><span style="color:#b48ead;">impl </span><span style="color:#c0c5ce;">SpanManager {
+    </span><span style="color:#b48ead;">fn </span><span style="color:#8fa1b3;">new_span</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">source_ind</span><span style="color:#c0c5ce;">: </span><span style="color:#b48ead;">usize</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">l</span><span style="color:#c0c5ce;">: </span><span style="color:#b48ead;">usize</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">r</span><span style="color:#c0c5ce;">: </span><span style="color:#b48ead;">usize</span><span style="color:#c0c5ce;">) -&gt; Span {
+        </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> i = </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.spans.</span><span style="color:#96b5b4;">len</span><span style="color:#c0c5ce;">();
+        </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.spans.</span><span style="color:#96b5b4;">push</span><span style="color:#c0c5ce;">((source_ind, l, r));
+        Span(i)
+    }
+}
+</span></code></pre>
+<p>我们还<em>捕获</em>跨度，所以如果同一个元组被传入两次，我们可以重用同一个索引，而不是在内部列表中创建一个多余的跨度。这并不是严格必需的，但我们也可以这样做，而且它确实允许做一些很好的事情，比如相等比较。</p>
+<p>在解析源文件的过程中，所有创建的新跨度都将指向同一个源文件，所以我们将跨度创建过程包装在第二个类 <code>SpanMaker</code> 中，它记住了当前的源文件，所以只需要传递起始和结束位置。因此跨度创建是一个两步的过程：首先将源文件添加到返回 <code>SpanMaker</code> 的 <code>SpanManager</code> 中，然后调用 <code>SpanMaker.span(l，r)</code> 来创建新跨度。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#b48ead;">impl </span><span style="color:#c0c5ce;">SpanManager {
+    </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">add_source</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">source</span><span style="color:#c0c5ce;">: String) -&gt; SpanMaker {
+        </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> i = </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.sources.</span><span style="color:#96b5b4;">len</span><span style="color:#c0c5ce;">();
+        </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.sources.</span><span style="color:#96b5b4;">push</span><span style="color:#c0c5ce;">(source);
+        SpanMaker {
+            parent: </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">,
+            source_ind: i,
+            pool: Default::default(),
+        }
+    }
+}
+
+#[</span><span style="color:#bf616a;">derive</span><span style="color:#c0c5ce;">(Debug)]
+</span><span style="color:#b48ead;">pub struct </span><span style="color:#c0c5ce;">SpanMaker&lt;</span><span style="color:#b48ead;">&#39;a</span><span style="color:#c0c5ce;">&gt; {
+    </span><span style="color:#bf616a;">parent</span><span style="color:#c0c5ce;">: &amp;</span><span style="color:#b48ead;">&#39;a mut</span><span style="color:#c0c5ce;"> SpanManager,
+    </span><span style="color:#bf616a;">source_ind</span><span style="color:#c0c5ce;">: </span><span style="color:#b48ead;">usize</span><span style="color:#c0c5ce;">,
+    </span><span style="color:#bf616a;">pool</span><span style="color:#c0c5ce;">: HashMap&lt;(</span><span style="color:#b48ead;">usize</span><span style="color:#c0c5ce;">, </span><span style="color:#b48ead;">usize</span><span style="color:#c0c5ce;">), Span&gt;,
+}
+</span></code></pre>
+<p>由于只有同一源文件的跨度才可能是潜在的重复，所以我们在 <code>SpanMaker</code> 内部使用一个存储了 <code>(left, right)</code> 对的 <code>HashMap</code> 来进行重复检测。当调用 <code>span(l，r)</code> 时，我们只需要检查 <code>(l，r)</code> 是否已经存在于映射中，如果不存在，就在父 <code>SpanManager</code> 的列表中插入一个新条目。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#b48ead;">impl</span><span style="color:#c0c5ce;">&lt;</span><span style="color:#b48ead;">&#39;a</span><span style="color:#c0c5ce;">&gt; SpanMaker&lt;</span><span style="color:#b48ead;">&#39;a</span><span style="color:#c0c5ce;">&gt; {
+    </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">span</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">l</span><span style="color:#c0c5ce;">: </span><span style="color:#b48ead;">usize</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">r</span><span style="color:#c0c5ce;">: </span><span style="color:#b48ead;">usize</span><span style="color:#c0c5ce;">) -&gt; Span {
+        </span><span style="color:#65737e;">// 让借用检查器开心
+        </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> source_ind = </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.source_ind;
+        </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> parent = &amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.parent;
+
+        *</span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.pool.</span><span style="color:#96b5b4;">entry</span><span style="color:#c0c5ce;">((l, r)).</span><span style="color:#96b5b4;">or_insert_with</span><span style="color:#c0c5ce;">(|| parent.</span><span style="color:#96b5b4;">new_span</span><span style="color:#c0c5ce;">(source_ind, l, r))
+    }
+}
+</span></code></pre>
+<p>由于 Rust 的借用检查器的限制，我们需要在插入之前将 <code>SpanMaker</code> 的字段复制到本地变量。有可能将来 Rust 的改进会使这一点变得不必要。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#b48ead;">impl </span><span style="color:#c0c5ce;">SpanManager {
+    </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">print</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">span</span><span style="color:#c0c5ce;">: Span) -&gt; String;
+}
+</span></code></pre>
+<p>接下来，我们需要一种方法来实际转换 <code>Span</code> 到那些格式化良好的错误信息。这在 <code>SpanManager.print</code> 方法中完成。基本的想法就是在源码中找到跨度所覆盖的那部分行，然后在它下面打印适当长度的 <code>^~~~~~</code> 字符串。cubiml 的实现还包括最多两行的上下文，围绕着跨度发生的行，导致如下结果：</p>
+<pre style="background-color:#2b303b;">
+<code><span style="color:#c0c5ce;">let abs_float =
+    fun x -&gt; if x &lt;. 0. then 0. -. x else x;
+    ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+let rec fib = fun x -&gt;
+</span></code></pre>
+<p>我不会在这里展示它的实现，因为它只是很多繁琐的字符串分割和格式化，但如果你好奇的话，可以在<a href="https://github.com/Storyyeller/cubiml-demo/blob/v7/src/spans.rs#L26">这里</a>看到完整的代码。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#b48ead;">pub type </span><span style="color:#c0c5ce;">Spanned&lt;T&gt; = (T, Span);
+</span></code></pre>
+<p>最后，我们定义了一个公开的类型定义 <code>Spanned&lt;T&gt;</code>，它将跨度与给定的值关联起来，以便在代码库的其他地方使用。</p>
+<h3 id="chou-xiang-yu-fa-shu">抽象语法树</h3>
+<p>接下来，我们必须在抽象语法树中添加一个地方来存储跨度，然后在解析器中填充它们。回想一下，我们需要为可能想在错误信息中突出显示的代码的任何部分存储跨度。这有点主观，有很多方法来构建 AST，但这是我采用的实现方式。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#b48ead;">pub enum </span><span style="color:#c0c5ce;">Expr {
+    BinOp(Spanned&lt;Box&lt;Expr&gt;&gt;, Spanned&lt;Box&lt;Expr&gt;&gt;, OpType, Op, Span),
+    Call(Box&lt;Expr&gt;, Box&lt;Expr&gt;, Span),
+    Case(Spanned&lt;String&gt;, Box&lt;Expr&gt;),
+    FieldAccess(Box&lt;Expr&gt;, String, Span),
+    FuncDef(Spanned&lt;(String, Box&lt;Expr&gt;)&gt;),
+    If(Spanned&lt;Box&lt;Expr&gt;&gt;, Box&lt;Expr&gt;, Box&lt;Expr&gt;),
+    Let(VarDefinition, Box&lt;Expr&gt;),
+    LetRec(Vec&lt;VarDefinition&gt;, Box&lt;Expr&gt;),
+    Literal(Literal, Spanned&lt;String&gt;),
+    Match(Box&lt;Expr&gt;, Vec&lt;(Spanned&lt;CaseMatchPattern&gt;, Box&lt;Expr&gt;)&gt;, Span),
+    Record(Spanned&lt;Vec&lt;(Spanned&lt;String&gt;, Box&lt;Expr&gt;)&gt;&gt;),
+    Variable(Spanned&lt;String&gt;),
+}
+</span></code></pre><h3 id="jie-xi-qi">解析器</h3>
+<p>为了在解析器中生成跨度，首先需要一种方法将 <code>SpanMaker</code> 传递到解析器中，这样就可以在语法产品中使用它。幸运的是，Lalrpop 让这一点很容易做到。你所要做的就是在语法文件的顶部添加这行代码，生成的解析器函数就会多出一个 <code>ctx</code> 参数，然后就可以在任何一个语法规则中访问这个参数。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#96b5b4;">grammar</span><span style="color:#c0c5ce;">(ctx: &amp;</span><span style="color:#b48ead;">mut </span><span style="color:#c0c5ce;">spans::SpanMaker&lt;</span><span style="color:#b48ead;">&#39;input</span><span style="color:#c0c5ce;">&gt;);
+</span></code></pre>
+<p>Lalrpop 访问源位置的语法有点烦人，幸运的是可以用宏来包装。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">Spanned&lt;T&gt;: spans::Spanned&lt;T&gt; = {
+    &lt;l: @L&gt; &lt;val: T&gt; &lt;r: @R&gt; =&gt; (val, ctx.</span><span style="color:#96b5b4;">span</span><span style="color:#c0c5ce;">(l, r))
+};
+</span></code></pre>
+<p><code>Spanned&lt;T&gt;</code> 宏接收一个<em>语法规则</em>，也就是终端和非终端的序列，作为 <code>T</code> 参数，并返回该产品产生的结果，除了在包装时增加了一个 <code>Span</code>。</p>
+<p>接下来，我们必须更新所有的语法规则，将生成的跨度添加到 AST 中，然后更新类型检查器前端和代码生成（照例跳过）来处理 AST 的改变的形状。这有点繁琐，而且每种类型的 AST 节点大多相同，所以我只展示两种最复杂的情况，即匹配和二元运算符，其余的让你去解决。和往常一样，本文的完整代码也可以在 <a href="https://github.com/Storyyeller/cubiml-demo/tree/v7">Github</a> 上查看。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">CaseMatchPattern = {
+    Tag Ident,
+}
+MatchArm = {
+    &lt;Spanned&lt;CaseMatchPattern&gt;&gt; &quot;</span><span style="color:#a3be8c;">-&gt;</span><span style="color:#c0c5ce;">&quot; &lt;CallExpr&gt;,
+}
+MatchSub = &quot;</span><span style="color:#a3be8c;">match</span><span style="color:#c0c5ce;">&quot; &lt;Spanned&lt;Expr&gt;&gt; &quot;</span><span style="color:#a3be8c;">with</span><span style="color:#c0c5ce;">&quot; &lt;SepList&lt;MatchArm, </span><span style="background-color:#bf616a;color:#2b303b;">&quot;</span><span style="color:#c0c5ce;">|&quot;</span><span style="color:#a3be8c;">&gt;&gt;;
+Match: Box&lt;ast::Expr&gt; = {
+    MatchSub =&gt; {
+        let ((param, span), arms) = &lt;&gt;;
+        Box::new(ast::Expr::Match(param, arms, span))
+    }
+}
+</span></code></pre>
+<p>对于匹配，我们需要为每个被匹配的 case 模式获取一个跨度，同时也需要为输入参数获取一个跨度。前者通过将 <code>CaseMatchPattern</code> 封装在 <code>Spanned</code> 宏中来处理。在后一种情况下，我们将输入的 <code>Expr</code> 封装在 <code>Spanned</code> 中，但是将跨度稍微重新排列一下，并将其贴在 <code>ast::Expr::Match</code> 的最后一个参数中，以简化 AST 结构。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">MultOpSub: (ast::OpType, ast::Op) = {
+    &quot;</span><span style="color:#a3be8c;">*</span><span style="color:#c0c5ce;">&quot; =&gt; (ast::OpType::IntOp, ast::Op::Mult),
+    &quot;</span><span style="color:#a3be8c;">/</span><span style="color:#c0c5ce;">&quot; =&gt; (ast::OpType::IntOp, ast::Op::Div),
+    &quot;</span><span style="color:#a3be8c;">*.</span><span style="color:#c0c5ce;">&quot; =&gt; (ast::OpType::FloatOp, ast::Op::Mult),
+    &quot;</span><span style="color:#a3be8c;">/.</span><span style="color:#c0c5ce;">&quot; =&gt; (ast::OpType::FloatOp, ast::Op::Div),
+}
+MultOp: Box&lt;ast::Expr&gt; = {
+    Spanned&lt;(Spanned&lt;MultExpr&gt; MultOpSub Spanned&lt;CallExpr&gt;)&gt; =&gt; {
+        </span><span style="color:#b48ead;">let </span><span style="color:#c0c5ce;">((lhs, op, rhs), span) = &lt;&gt;;
+        Box::new(ast::Expr::BinOp(lhs, rhs, op.</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">, op.</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">, span))
+    },
+}
+</span></code></pre>
+<p>对于二元运算符，我们为每个输入操作数创建跨度，也为整个表达式创建跨度。我还对这些规则进行了重构，以避免同一优先级类的每个单独运算符的代码重复。</p>
+<h3 id="cuo-wu-xin-xi">错误信息</h3>
+<p>接下来，我们需要一种方法来报告包含跨度的错误信息。此外，还需要对 cubiml 的错误处理进行一些清理。</p>
+<p>在 cubiml 的初始版本中，我们创建了单独的 <code>SyntaxError</code> 和 <code>TypeError</code> 类，分别用来保存语法和类型错误。然而，我们从来没有真正利用过它们是独立类型这一事实。相反，这两个错误类只是错误信息字符串的静默持有者，被直接传给了用户。因此，我们将定义一个新的 <code>SpannedError</code> 类来表示包含跨度的错误消息，并重新定义 <code>SyntaxError</code> 和 <code>TypeError</code> 只是 <code>SpannedError</code> 的别名。</p>
+<p>让所有的错误都是相同的类型，也让我们摆脱了类型检查器前端中的 <code>Box&lt;dyn error::Error&gt;</code> 废话。将 <code>SyntaxError</code> 和 <code>TypeError</code> 分开是另一个工程上的决定，在当时看来是个好主意，但事实证明是不必要的。</p>
+<p>总之，这是新的 <code>SpannedError </code>类。它只是持有了一个或多个字符串和跨度对。<code>impl Into&lt;String&gt;</code> 的东西只是一个让 API 更方便的技巧，让我们可以传递静态的 <code>&amp;str</code> 或者拥有的 <code>String</code>，而不需要显式转换。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">#[</span><span style="color:#bf616a;">derive</span><span style="color:#c0c5ce;">(Debug)]
+</span><span style="color:#b48ead;">pub struct </span><span style="color:#c0c5ce;">SpannedError {
+    </span><span style="color:#bf616a;">pairs</span><span style="color:#c0c5ce;">: Vec&lt;(String, Span)&gt;,
+}
+
+</span><span style="color:#b48ead;">impl </span><span style="color:#c0c5ce;">SpannedError {
+    </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">new1</span><span style="color:#c0c5ce;">(</span><span style="color:#bf616a;">s1</span><span style="color:#c0c5ce;">: impl Into&lt;String&gt;, </span><span style="color:#bf616a;">s2</span><span style="color:#c0c5ce;">: Span) -&gt; </span><span style="color:#b48ead;">Self </span><span style="color:#c0c5ce;">{
+        </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> p1 = (s1.</span><span style="color:#96b5b4;">into</span><span style="color:#c0c5ce;">(), s2);
+        SpannedError { pairs: vec![p1] }
+    }
+
+    </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">new2</span><span style="color:#c0c5ce;">(</span><span style="color:#bf616a;">s1</span><span style="color:#c0c5ce;">: impl Into&lt;String&gt;, </span><span style="color:#bf616a;">s2</span><span style="color:#c0c5ce;">: Span, </span><span style="color:#bf616a;">s3</span><span style="color:#c0c5ce;">: impl Into&lt;String&gt;, </span><span style="color:#bf616a;">s4</span><span style="color:#c0c5ce;">: Span) -&gt; </span><span style="color:#b48ead;">Self </span><span style="color:#c0c5ce;">{
+        </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> p1 = (s1.</span><span style="color:#96b5b4;">into</span><span style="color:#c0c5ce;">(), s2);
+        </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> p2 = (s3.</span><span style="color:#96b5b4;">into</span><span style="color:#c0c5ce;">(), s4);
+        SpannedError { pairs: vec![p1, p2] }
+    }
+}
+</span></code></pre>
+<p><code>Error</code> 特质要求实现类型可以显示为字符串。然而，我们所有的跨度打印逻辑都隐藏在 <code>SpanManager</code> 类中，这意味着不访问 <code>SpanManager</code> 就无法正确地打印错误。因此，我们只是用一个不做任何事情的方法来假装实现 <code>Error</code>。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#b48ead;">impl </span><span style="color:#c0c5ce;">fmt::Display </span><span style="color:#b48ead;">for </span><span style="color:#c0c5ce;">SpannedError {
+    </span><span style="color:#b48ead;">fn </span><span style="color:#8fa1b3;">fmt</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">f</span><span style="color:#c0c5ce;">: &amp;</span><span style="color:#b48ead;">mut </span><span style="color:#c0c5ce;">fmt::Formatter) -&gt; fmt::Result {
+        Ok(())
+    }
+}
+</span><span style="color:#b48ead;">impl </span><span style="color:#c0c5ce;">error::Error </span><span style="color:#b48ead;">for </span><span style="color:#c0c5ce;">SpannedError {}
+
+</span></code></pre>
+<p>取而代之的是，我们有<em>单独</em>的接收 <code>SpanManager</code> 的方法来<em>实际</em>打印错误信息。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">print</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">sm</span><span style="color:#c0c5ce;">: &amp;SpanManager) -&gt; String {
+    </span><span style="color:#b48ead;">let mut</span><span style="color:#c0c5ce;"> out = String::new();
+    </span><span style="color:#b48ead;">for </span><span style="color:#c0c5ce;">(msg, span) in </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.pairs.</span><span style="color:#96b5b4;">iter</span><span style="color:#c0c5ce;">() {
+        out += &amp;msg;
+        out += &quot;</span><span style="color:#96b5b4;">\n</span><span style="color:#c0c5ce;">&quot;;
+        out += &amp;sm.</span><span style="color:#96b5b4;">print</span><span style="color:#c0c5ce;">(*span);
+    }
+    out
+}
+</span></code></pre><h3 id="pi-pei-biao-da-cuo-wu">匹配表达错误</h3>
+<p>现在我们有了新的错误类，是时候使用它了。我们将从报告重复匹配 case 的错误开始。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#b48ead;">let mut</span><span style="color:#c0c5ce;"> case_names = HashMap::with_capacity(cases.</span><span style="color:#96b5b4;">len</span><span style="color:#c0c5ce;">());
+</span><span style="color:#b48ead;">for </span><span style="color:#c0c5ce;">(((tag, name), case_span), rhs_expr) in cases {
+    </span><span style="color:#b48ead;">if let </span><span style="color:#c0c5ce;">Some(old_span) = case_names.</span><span style="color:#96b5b4;">insert</span><span style="color:#c0c5ce;">(&amp;*tag, *case_span) {
+        </span><span style="color:#b48ead;">return </span><span style="color:#c0c5ce;">Err(SyntaxError::new2(
+            &quot;</span><span style="color:#a3be8c;">SyntaxError: Repeated match case</span><span style="color:#c0c5ce;">&quot;,
+            *case_span,
+            &quot;</span><span style="color:#a3be8c;">Note: Case was already matched here</span><span style="color:#c0c5ce;">&quot;,
+            old_span,
+        ));
+    }
+</span></code></pre>
+<p>为了显示重复匹配 case（或者类似于重复记录字段）的有用错误，我们需要指向被重复的 case 以及该 case 之前的出现。以前，我们只是跟踪已经看到的 case 标记的<em>集</em>，以便检测重复，但现在，我们用一个从 case 标记到跨度的<em>映射</em>来代替。每当我们处理新的 case 时，如果它还没有在映射中，我们就把它和它的跨度一起插入映射中。如果它在映射中，我们可以从映射中检索该 case 标记第一次出现的跨度，并将它与该标记新出现的实例的跨度一起传递给 <code>SpannedError::new2</code>。</p>
+<p>例如，下面的 cubiml 代码</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#c0c5ce;">fun x -&gt;
+    </span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> x </span><span style="color:#b48ead;">with
+      </span><span style="color:#c0c5ce;">`Foo </span><span style="color:#bf616a;">a </span><span style="color:#c0c5ce;">-&gt; </span><span style="color:#d08770;">0
+    </span><span style="color:#b48ead;">| </span><span style="color:#c0c5ce;">`Bar </span><span style="color:#bf616a;">b </span><span style="color:#c0c5ce;">-&gt; </span><span style="color:#d08770;">1
+    </span><span style="color:#b48ead;">| </span><span style="color:#c0c5ce;">`Foo </span><span style="color:#bf616a;">c </span><span style="color:#c0c5ce;">-&gt; </span><span style="color:#d08770;">2
+</span></code></pre>
+<p>产生以下错误信息：</p>
+<pre style="background-color:#2b303b;">
+<code><span style="color:#c0c5ce;">SyntaxError: Repeated match case
+      `Foo a -&gt; 0
+    | `Bar b -&gt; 1
+    | `Foo c -&gt; 2
+      ^~~~~~
+Note: Case was already matched here
+fun x -&gt;
+    match x with
+      `Foo a -&gt; 0
+      ^~~~~~
+    | `Bar b -&gt; 1
+    | `Foo c -&gt; 2
+</span></code></pre>
+<p>除此之外，在处理匹配表达式时，只需要对前端进行小幅更新。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">-        Match(match_expr, cases) =&gt; {
++        Match(match_expr, cases, span) =&gt; {
+             </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> match_type = </span><span style="color:#96b5b4;">check_expr</span><span style="color:#c0c5ce;">(engine, bindings, match_expr)?;
+             </span><span style="color:#b48ead;">let </span><span style="color:#c0c5ce;">(result_type, result_bound) = engine.</span><span style="color:#96b5b4;">var</span><span style="color:#c0c5ce;">();
+</span></code></pre>
+<p>我们只是从 ast 节点中获取新添加的跨度字段 ...</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">-            </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> bound = engine.</span><span style="color:#96b5b4;">case_use</span><span style="color:#c0c5ce;">(case_type_pairs);
++            </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> bound = engine.</span><span style="color:#96b5b4;">case_use</span><span style="color:#c0c5ce;">(case_type_pairs, *span);
+             engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(match_type, bound)?;
+</span></code></pre>
+<p>并将其传递给 <code>engine.case_use</code>，供类型错误使用。</p>
+<h3 id="er-yuan-yun-suan-fu">二元运算符</h3>
+<p>为了在类型错误的情况下报告跨度错误信息，我们需要在类型检查器核心的类型图中跟踪跨度。现在，我们使用一个非常简单的方案，它只是为每个值和用跟踪跨度。在类型不匹配事件中，我们只需显示显示值来源的跨度和使用不兼容方式的跨度。</p>
+<p>作为如何将新跨度从前端传递到核心的例子，这里是二进制运算符在前端的新实现。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">BinOp((lhs_expr, lhs_span), (rhs_expr, rhs_span), op_type, op, full_span) =&gt; {
+    </span><span style="color:#b48ead;">use </span><span style="color:#c0c5ce;">ast::OpType::*;
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> lhs_type = </span><span style="color:#96b5b4;">check_expr</span><span style="color:#c0c5ce;">(engine, bindings, lhs_expr)?;
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> rhs_type = </span><span style="color:#96b5b4;">check_expr</span><span style="color:#c0c5ce;">(engine, bindings, rhs_expr)?;
+
+    Ok(</span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> op_type {
+        IntOp =&gt; {
+            </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> lhs_bound = engine.</span><span style="color:#96b5b4;">int_use</span><span style="color:#c0c5ce;">(*lhs_span);
+            </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> rhs_bound = engine.</span><span style="color:#96b5b4;">int_use</span><span style="color:#c0c5ce;">(*rhs_span);
+            engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(lhs_type, lhs_bound)?;
+            engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(rhs_type, rhs_bound)?;
+            engine.</span><span style="color:#96b5b4;">int</span><span style="color:#c0c5ce;">(*full_span)
+        }
+        FloatOp =&gt; {
+            </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> lhs_bound = engine.</span><span style="color:#96b5b4;">float_use</span><span style="color:#c0c5ce;">(*lhs_span);
+            </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> rhs_bound = engine.</span><span style="color:#96b5b4;">float_use</span><span style="color:#c0c5ce;">(*rhs_span);
+            engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(lhs_type, lhs_bound)?;
+            engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(rhs_type, rhs_bound)?;
+            engine.</span><span style="color:#96b5b4;">float</span><span style="color:#c0c5ce;">(*full_span)
+        }
+        StrOp =&gt; {
+            </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> lhs_bound = engine.</span><span style="color:#96b5b4;">str_use</span><span style="color:#c0c5ce;">(*lhs_span);
+            </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> rhs_bound = engine.</span><span style="color:#96b5b4;">str_use</span><span style="color:#c0c5ce;">(*rhs_span);
+            engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(lhs_type, lhs_bound)?;
+            engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(rhs_type, rhs_bound)?;
+            engine.</span><span style="color:#b48ead;">str</span><span style="color:#c0c5ce;">(*full_span)
+        }
+        IntCmp =&gt; {
+            </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> lhs_bound = engine.</span><span style="color:#96b5b4;">int_use</span><span style="color:#c0c5ce;">(*lhs_span);
+            </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> rhs_bound = engine.</span><span style="color:#96b5b4;">int_use</span><span style="color:#c0c5ce;">(*rhs_span);
+            engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(lhs_type, lhs_bound)?;
+            engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(rhs_type, rhs_bound)?;
+            engine.</span><span style="color:#b48ead;">bool</span><span style="color:#c0c5ce;">(*full_span)
+        }
+        FloatCmp =&gt; {
+            </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> lhs_bound = engine.</span><span style="color:#96b5b4;">float_use</span><span style="color:#c0c5ce;">(*lhs_span);
+            </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> rhs_bound = engine.</span><span style="color:#96b5b4;">float_use</span><span style="color:#c0c5ce;">(*rhs_span);
+            engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(lhs_type, lhs_bound)?;
+            engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(rhs_type, rhs_bound)?;
+            engine.</span><span style="color:#b48ead;">bool</span><span style="color:#c0c5ce;">(*full_span)
+        }
+        AnyCmp =&gt; engine.</span><span style="color:#b48ead;">bool</span><span style="color:#c0c5ce;">(*full_span),
+    })
+}
+</span></code></pre>
+<p>代码很长，但大部分都很简单。对于每个可能的 <code>OpType</code>，主要逻辑都是重复的，但基本思路很简单。对于每个操作数，左，右，我们得到该表达式的跨度，并将其传递给相应的绑定函数。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">BinOp((lhs_expr, lhs_span), (rhs_expr, rhs_span), op_type, op, full_span) =&gt; {
+</span><span style="color:#65737e;">// ...
+</span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> lhs_bound = engine.</span><span style="color:#96b5b4;">int_use</span><span style="color:#c0c5ce;">(*lhs_span);
+</span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> rhs_bound = engine.</span><span style="color:#96b5b4;">int_use</span><span style="color:#c0c5ce;">(*rhs_span);
+</span></code></pre>
+<p>以前，我们为两个操作数使用单一的绑定（用类型），但现在我们必须创建单独的用类型，因为相关的跨度信息会有所不同。这就允许更具体的错误信息，显示操作数中的<em>哪一个</em>导致了错误，就像下面的例子：</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">TypeError: Value is required to be a integer here,
+</span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> y = &quot;</span><span style="color:#a3be8c;">Hello, world!</span><span style="color:#c0c5ce;">&quot;;
+</span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> z = y;
+</span><span style="color:#d08770;">5 </span><span style="color:#c0c5ce;">+ x * z + </span><span style="color:#d08770;">23
+        </span><span style="color:#c0c5ce;">^
+But that value may be a string originating here.
+</span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> x = -</span><span style="color:#d08770;">18</span><span style="color:#c0c5ce;">;
+</span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> y = &quot;</span><span style="color:#a3be8c;">Hello, world!</span><span style="color:#c0c5ce;">&quot;;
+        ^~~~~~~~~~~~~~~
+</span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> z = y;
+</span><span style="color:#d08770;">5 </span><span style="color:#c0c5ce;">+ x * z + </span><span style="color:#d08770;">23
+</span></code></pre><pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">BinOp((lhs_expr, lhs_span), (rhs_expr, rhs_span), op_type, op, full_span) =&gt; {
+</span><span style="color:#65737e;">// ...
+</span><span style="color:#c0c5ce;">engine.</span><span style="color:#96b5b4;">int</span><span style="color:#c0c5ce;">(*full_span)
+</span></code></pre>
+<p>我们还有新的 <code>full_span</code> 字段，它包含了整个运算符表达式的跨度，我们将其传递给运算符的返回类型的值构造器。这使得我们也可以在运算符的<em>结果</em>涉及类型错误时打印错误信息，就像下面的例子一样。</p>
+<pre style="background-color:#2b303b;">
+<code><span style="color:#c0c5ce;">TypeError: Value is required to be a record here,
+let x = 7.8 *. -9.22;
+x.foo
+ ^~~~
+But that value may be a float originating here.
+let x = 7.8 *. -9.22;
+        ^~~~~~~~~~~~
+x.foo
+</span></code></pre><h3 id="lei-xing-jian-cha-qi-he-xin">类型检查器核心</h3>
+<p>现在我们已经更新了解析器、AST 和类型检查器前端，剩下的就是对类型检查器核心进行上述修改。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;"> </span><span style="color:#b48ead;">enum </span><span style="color:#c0c5ce;">TypeNode {
+     Var,
+-    Value(VTypeHead),
+-    Use(UTypeHead),
++    Value((VTypeHead, Span)),
++    Use((UTypeHead, Span)),
+ }
+</span></code></pre>
+<p>首先，用 (head, span) 对替换所有类型节点头。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">-    </span><span style="color:#b48ead;">fn </span><span style="color:#8fa1b3;">new_val</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">val_type</span><span style="color:#c0c5ce;">: VTypeHead) -&gt; Value {
++    </span><span style="color:#b48ead;">fn </span><span style="color:#8fa1b3;">new_val</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">val_type</span><span style="color:#c0c5ce;">: VTypeHead, </span><span style="color:#bf616a;">span</span><span style="color:#c0c5ce;">: Span) -&gt; Value {
+         </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> i = </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.r.</span><span style="color:#96b5b4;">add_node</span><span style="color:#c0c5ce;">();
+         assert!(i == </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.types.</span><span style="color:#96b5b4;">len</span><span style="color:#c0c5ce;">());
+-        </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.types.</span><span style="color:#96b5b4;">push</span><span style="color:#c0c5ce;">(TypeNode::Value(val_type));
++        </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.types.</span><span style="color:#96b5b4;">push</span><span style="color:#c0c5ce;">(TypeNode::Value((val_type, span)));
+         Value(i)
+     }
+
+-    </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">func_use</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">arg</span><span style="color:#c0c5ce;">: Value, </span><span style="color:#bf616a;">ret</span><span style="color:#c0c5ce;">: Use) -&gt; Use {
+-        </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">new_use</span><span style="color:#c0c5ce;">(UTypeHead::UFunc { arg, ret })
++    </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">func_use</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">arg</span><span style="color:#c0c5ce;">: Value, </span><span style="color:#bf616a;">ret</span><span style="color:#c0c5ce;">: Use, </span><span style="color:#bf616a;">span</span><span style="color:#c0c5ce;">: Span) -&gt; Use {
++        </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">new_use</span><span style="color:#c0c5ce;">(UTypeHead::UFunc { arg, ret }, span)
+     }
+
+-    </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">obj</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">fields</span><span style="color:#c0c5ce;">: Vec&lt;(String, Value)&gt;) -&gt; Value {
++    </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">obj</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">fields</span><span style="color:#c0c5ce;">: Vec&lt;(String, Value)&gt;, </span><span style="color:#bf616a;">span</span><span style="color:#c0c5ce;">: Span) -&gt; Value {
+         </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> fields = fields.</span><span style="color:#96b5b4;">into_iter</span><span style="color:#c0c5ce;">().</span><span style="color:#96b5b4;">collect</span><span style="color:#c0c5ce;">();
+-        </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">new_val</span><span style="color:#c0c5ce;">(VTypeHead::VObj { fields })
++        </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">new_val</span><span style="color:#c0c5ce;">(VTypeHead::VObj { fields }, span)
+     }
+</span></code></pre>
+<p>然后更新构造器函数，接收并传递跨度。这个改变是相当重复的，所以我只是展示了其中一部分。我相信你会明白的。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">-</span><span style="color:#b48ead;">fn </span><span style="color:#8fa1b3;">check_heads</span><span style="color:#c0c5ce;">(</span><span style="color:#bf616a;">lhs</span><span style="color:#c0c5ce;">: &amp;VTypeHead, </span><span style="color:#bf616a;">rhs</span><span style="color:#c0c5ce;">: &amp;UTypeHead, </span><span style="color:#bf616a;">out</span><span style="color:#c0c5ce;">: &amp;</span><span style="color:#b48ead;">mut </span><span style="color:#c0c5ce;">Vec&lt;(Value, Use)&gt;) -&gt; Result&lt;(), TypeError&gt; {
++</span><span style="color:#b48ead;">fn </span><span style="color:#8fa1b3;">check_heads</span><span style="color:#c0c5ce;">(</span><span style="color:#bf616a;">lhs</span><span style="color:#c0c5ce;">: &amp;(</span><span style="color:#bf616a;">VTypeHead</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">Span</span><span style="color:#c0c5ce;">), </span><span style="color:#bf616a;">rhs</span><span style="color:#c0c5ce;">: &amp;(</span><span style="color:#bf616a;">UTypeHead</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">Span</span><span style="color:#c0c5ce;">), </span><span style="color:#bf616a;">out</span><span style="color:#c0c5ce;">: &amp;</span><span style="color:#b48ead;">mut </span><span style="color:#c0c5ce;">Vec&lt;(Value, Use)&gt;) -&gt; Result&lt;(), TypeError&gt; {
+     </span><span style="color:#b48ead;">use </span><span style="color:#c0c5ce;">UTypeHead::*;
+     </span><span style="color:#b48ead;">use </span><span style="color:#c0c5ce;">VTypeHead::*;
+
+-    </span><span style="color:#b48ead;">match </span><span style="color:#c0c5ce;">(lhs, rhs) {
++    </span><span style="color:#b48ead;">match </span><span style="color:#c0c5ce;">(&amp;lhs.</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">, &amp;rhs.</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">) {
+         (&amp;VBool, &amp;UBool) =&gt; Ok(()),
+         (&amp;VFloat, &amp;UFloat) =&gt; Ok(()),
+</span></code></pre>
+<p>接下来，当然需要更新 <code>check_heads</code>，以接收 (head, span) 对，而不是仅节点头本身。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">                     out.</span><span style="color:#96b5b4;">push</span><span style="color:#c0c5ce;">((lhs2, rhs2));
+                     Ok(())
+                 }
+-                None =&gt; Err(TypeError(format!(&quot;</span><span style="color:#a3be8c;">Missing field </span><span style="color:#d08770;">{}</span><span style="color:#c0c5ce;">&quot;, name))),
++                None =&gt; Err(TypeError::new2(
++                    format!(&quot;</span><span style="color:#a3be8c;">TypeError: Missing field </span><span style="color:#d08770;">{}</span><span style="color:#96b5b4;">\n</span><span style="color:#a3be8c;">Note: Field is accessed here</span><span style="color:#c0c5ce;">&quot;, name),
++                    rhs.</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">,
++                    &quot;</span><span style="color:#a3be8c;">But the record is defined without that field here.</span><span style="color:#c0c5ce;">&quot;,
++                    lhs.</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">,
++                )),
+             }
+         }
+         (&amp;VCase { case: (</span><span style="color:#b48ead;">ref</span><span style="color:#c0c5ce;"> name, lhs2) }, &amp;UCase { cases: </span><span style="color:#b48ead;">ref</span><span style="color:#c0c5ce;"> cases2 }) =&gt; {
+</span></code></pre>
+<p>然后修改“缺失字段”和“缺失 case”的错误来穿过新增加的跨度，得出这样的错误信息。</p>
+<pre style="background-color:#2b303b;">
+<code><span style="color:#c0c5ce;">TypeError: Missing field bar
+Note: Field is accessed here
+let x = {foo = 6};
+x.bar
+ ^~~~
+But the record is defined without that field here.
+let x = {foo = 6};
+        ^~~~~~~~~
+x.bar
+</span></code></pre>
+<p>最后，到了不匹配的类型头处理器。以前，这只是一个简单的 <code>_ =&gt; Err(TypeError(&quot;Unexpected types&quot;.to_string()),</code>。然而，现在我们不仅需要打印出违规值和使用类型的跨度，还需要打印出它们使用了哪些头部构造函数。新版本的“意外类型”处理器如下。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> found = </span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> lhs.</span><span style="color:#d08770;">0 </span><span style="color:#c0c5ce;">{
+    VBool =&gt; &quot;</span><span style="color:#a3be8c;">boolean</span><span style="color:#c0c5ce;">&quot;,
+    VFloat =&gt; &quot;</span><span style="color:#a3be8c;">float</span><span style="color:#c0c5ce;">&quot;,
+    VInt =&gt; &quot;</span><span style="color:#a3be8c;">integer</span><span style="color:#c0c5ce;">&quot;,
+    VStr =&gt; &quot;</span><span style="color:#a3be8c;">string</span><span style="color:#c0c5ce;">&quot;,
+    VFunc { .. } =&gt; &quot;</span><span style="color:#a3be8c;">function</span><span style="color:#c0c5ce;">&quot;,
+    VObj { .. } =&gt; &quot;</span><span style="color:#a3be8c;">record</span><span style="color:#c0c5ce;">&quot;,
+    VCase { .. } =&gt; &quot;</span><span style="color:#a3be8c;">case</span><span style="color:#c0c5ce;">&quot;,
+};
+</span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> expected = </span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> rhs.</span><span style="color:#d08770;">0 </span><span style="color:#c0c5ce;">{
+    UBool =&gt; &quot;</span><span style="color:#a3be8c;">boolean</span><span style="color:#c0c5ce;">&quot;,
+    UFloat =&gt; &quot;</span><span style="color:#a3be8c;">float</span><span style="color:#c0c5ce;">&quot;,
+    UInt =&gt; &quot;</span><span style="color:#a3be8c;">integer</span><span style="color:#c0c5ce;">&quot;,
+    UStr =&gt; &quot;</span><span style="color:#a3be8c;">string</span><span style="color:#c0c5ce;">&quot;,
+    UFunc { .. } =&gt; &quot;</span><span style="color:#a3be8c;">function</span><span style="color:#c0c5ce;">&quot;,
+    UObj { .. } =&gt; &quot;</span><span style="color:#a3be8c;">record</span><span style="color:#c0c5ce;">&quot;,
+    UCase { .. } =&gt; &quot;</span><span style="color:#a3be8c;">case</span><span style="color:#c0c5ce;">&quot;,
+};
+
+Err(TypeError::new2(
+    format!(&quot;</span><span style="color:#a3be8c;">TypeError: Value is required to be a </span><span style="color:#d08770;">{}</span><span style="color:#a3be8c;"> here,</span><span style="color:#c0c5ce;">&quot;, expected),
+    rhs.</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">,
+    format!(&quot;</span><span style="color:#a3be8c;">But that value may be a </span><span style="color:#d08770;">{}</span><span style="color:#a3be8c;"> originating here.</span><span style="color:#c0c5ce;">&quot;, found),
+    lhs.</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">,
+))
+</span></code></pre><h3 id="jie-xi-qi-cuo-wu">解析器错误</h3>
+<p>我们现在已经得到了更好的类型和语法错误，但还有最后一个点缀要做。既然有了显示跨度错误的能力，我们也可以用它来显示解析错误。解析错误是由 <code>lalrpop</code> 本身产生的，这个过程我们无法控制，但可以很容易地写一个函数来将 lalrpop 产生的错误转换成漂亮的跨度错误。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#b48ead;">fn </span><span style="color:#8fa1b3;">convert_parse_error</span><span style="color:#c0c5ce;">&lt;T: Display&gt;(</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">sm</span><span style="color:#c0c5ce;">: SpanMaker, </span><span style="color:#bf616a;">e</span><span style="color:#c0c5ce;">: ParseError&lt;</span><span style="color:#b48ead;">usize</span><span style="color:#c0c5ce;">, T, &amp;</span><span style="color:#b48ead;">&#39;static str</span><span style="color:#c0c5ce;">&gt;) -&gt; SpannedError {
+    </span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> e {
+        ParseError::InvalidToken { location } =&gt; {
+            SpannedError::new1(&quot;</span><span style="color:#a3be8c;">SyntaxError: Invalid token</span><span style="color:#c0c5ce;">&quot;, sm.</span><span style="color:#96b5b4;">span</span><span style="color:#c0c5ce;">(location, location))
+        }
+        ParseError::UnrecognizedEOF { location, expected } =&gt; SpannedError::new1(
+            format!(
+                &quot;</span><span style="color:#a3be8c;">SyntaxError: Unexpected end of input.</span><span style="color:#96b5b4;">\n</span><span style="color:#a3be8c;">Note: expected tokens: [</span><span style="color:#d08770;">{}</span><span style="color:#a3be8c;">]</span><span style="color:#96b5b4;">\n</span><span style="color:#a3be8c;">Parse error occurred here:</span><span style="color:#c0c5ce;">&quot;,
+                expected.</span><span style="color:#96b5b4;">join</span><span style="color:#c0c5ce;">(&quot;</span><span style="color:#a3be8c;">, </span><span style="color:#c0c5ce;">&quot;)
+            ),
+            sm.</span><span style="color:#96b5b4;">span</span><span style="color:#c0c5ce;">(location, location),
+        ),
+        ParseError::UnrecognizedToken { token, expected } =&gt; SpannedError::new1(
+            format!(
+                &quot;</span><span style="color:#a3be8c;">SyntaxError: Unexpected token </span><span style="color:#d08770;">{}</span><span style="color:#96b5b4;">\n</span><span style="color:#a3be8c;">Note: expected tokens: [</span><span style="color:#d08770;">{}</span><span style="color:#a3be8c;">]</span><span style="color:#96b5b4;">\n</span><span style="color:#a3be8c;">Parse error occurred here:</span><span style="color:#c0c5ce;">&quot;,
+                token.</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">,
+                expected.</span><span style="color:#96b5b4;">join</span><span style="color:#c0c5ce;">(&quot;</span><span style="color:#a3be8c;">, </span><span style="color:#c0c5ce;">&quot;)
+            ),
+            sm.</span><span style="color:#96b5b4;">span</span><span style="color:#c0c5ce;">(token.</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">, token.</span><span style="color:#d08770;">2</span><span style="color:#c0c5ce;">),
+        ),
+        ParseError::ExtraToken { token } =&gt; {
+            SpannedError::new1(&quot;</span><span style="color:#a3be8c;">SyntaxError: Unexpected extra token</span><span style="color:#c0c5ce;">&quot;, sm.</span><span style="color:#96b5b4;">span</span><span style="color:#c0c5ce;">(token.</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">, token.</span><span style="color:#d08770;">2</span><span style="color:#c0c5ce;">))
+        }
+        ParseError::User { error: msg } =&gt; unreachable!(),
+    }
+}
+</span></code></pre><h2 id="yan-shi">演示</h2>
+<script src="./p7/demo.js"></script>
+<p><cubiml-demo></cubiml-demo></p>
+<h2 id="jin-hou-de-gong-zuo">今后的工作</h2>
+<p>现在我们有了更漂亮的编译器错误信息。然而，还有一些问题。</p>
+<h3 id="zhi-biao-fu-he-unicode">制表符和 unicode</h3>
+<p>目前高亮显示跨度的方法是在行内找到跨度的偏移量，然后在下面打印适当数量的空格和 <code>~ </code>，使 <code>^~~~~</code> 部分与跨度对齐。</p>
+<p>只要源代码中的每一个字节在显示时占用相同的空格，这种方法就适用。但是，制表符和 unicode 字符违背了这个假设。</p>
+<p>例如，下面的代码，其中包含一个 unicode 字符串和 <code>s + 2</code> 前的制表符。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#b48ead;">let </span><span style="color:#bf616a;">s </span><span style="color:#c0c5ce;">= &quot;</span><span style="color:#a3be8c;">This is ünicodè -&gt; 𒍅 &lt;-</span><span style="color:#c0c5ce;">&quot;;
+    s + </span><span style="color:#d08770;">2
+</span></code></pre>
+<p>产生以下错误</p>
+<pre style="background-color:#2b303b;">
+<code><span style="color:#c0c5ce;">TypeError: Value is required to be a integer here,
+let s = &quot;This is ünicodè -&gt; 𒍅 &lt;-&quot;;
+    s + 2
+ ^
+But that value may be a string originating here.
+let s = &quot;This is ünicodè -&gt; 𒍅 &lt;-&quot;;
+        ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    s + 2
+</span></code></pre>
+<p>请注意第一个箭头是如何错位的，因为它将制表符只算作一个空格，而不是这里显示的四个空格。同时，由于使用了多字节的 unicode 字符，第二个跨度高亮延伸过了它所高亮的字符串的末端。</p>
+<p>遗憾的是，我认为在传统的命令行界面范式内，没有很好的方法来解决这个问题，因为输出的内容被限制在静态的纯文本上。然而，可以通过更广泛的编辑器集成来解决这个问题，让代码编辑器自然地意识到错误信息中的跨度。这样一来，编辑器就可以直接高亮显示相关的跨度，无论它们出现在编辑器窗口中的什么地方。</p>
+<h3 id="geng-chang-de-cuo-wu-lian">更长的错误链</h3>
+<p>目前，我们只是在代码中显示出值的原始位置以及它的不兼容使用的位置。这通常工作的很好，特别是对于像这里展示的小型代码样本。然而对于更大、更复杂的代码库来说，这种方法有时无法提供有关问题真实位置的相关信息。</p>
+<p>问题是，虽然流的端点是错误的最常见位置，但真正的错误可能在导致编译器推断出类型错误的推理链中的任何位置。例如，如果你有两个标准库类型 <code>Foo</code> 和 <code>Bar</code>，而你不小心把 <code>Bar</code> 传给了期望 <code>Foo</code> 的函数，那么产生的错误信息只会显示标准库中的两个位置（<code>Bar</code> 构造器和 <code>Foo</code> 函数），而真正错误的位置是发生混合函数调用的用户代码中。</p>
+<p>我在开发 <a href="https://github.com/Storyyeller/IntercalScript">IntercalScript</a> 时多次遇到这个问题，这是 cubiml 的早期前身，使用了同样的错误报告方法。遗憾的是，我认为这个问题没有很好的解决方法。当然，你可以很容易地修改 cubiml 来输出导致类型错误的整个推理链，并向用户显示每一步。然而，这个链条在病理情况下会大得不可想象，程序的大小要么是指数型，要么是二次方，取决于你如何输出。</p>
+<p>在传统的基于合一的语言中，这个链的最大长度只能是程序大小的线性，但这还是太大了，无法合理地显示给程序员。在 Haskell 等语言中，人们已经花了很多笔墨试图解决这个问题，但没有得到满意的答案。在实践中，人们只是在代码中随处放置手动类型注释，以避免这个问题。然而，我认为更有趣的潜在方法是，再次的，深度编辑器集成，提供一种机制来<em>交互地</em>显示错误，让程序员可以根据需求扩展信息，并利用他们对代码意图的知识快速钻到实际问题。</p>
+<p>总之，错误信息说完了，<a href="/blog/subtype-inference-by-example-part-8-mutability/">下周</a>我们将回归到为 cubiml 的类型系统添加功能。特别是，我们将添加对可变性的支持。</p>
+
+    </div>
+
+
+</article>
+
+
+        </main>
+        <footer>
+            <p>
+                © 2021 firecodelab.com
+            </p>
+            <p>
+                
+                
+            </p>
+        </footer>
+    </div>
+</body>
+</html>

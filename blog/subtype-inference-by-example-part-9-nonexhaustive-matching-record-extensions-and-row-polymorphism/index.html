@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="zh-cn">
+<head>
+    <meta charset="utf-8">
+    <meta name="HandheldFriendly" content="True">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="referrer" content="no-referrer-when-downgrade">
+
+    <title>[译]通过例子学子类型推理（九）：匹配通配符、记录扩展和行多态</title>
+    <meta name="description" content="">
+
+    <link rel="stylesheet" href="https:&#x2F;&#x2F;firecodelab.com&#x2F;main.css">
+
+    
+
+    
+    
+</head>
+<body>
+    <a class="skip-main" href="#main">Skip to content</a>
+    <div class="container">
+        <header>
+            <h1 class="site-header">
+                <a href="https:&#x2F;&#x2F;firecodelab.com">Fire Code</a>
+            </h1>
+            <nav>
+                
+                
+                
+                <a  href="&#x2F;blog&#x2F;">博客</a>
+                
+                
+                <a  href="&#x2F;about&#x2F;">关于</a>
+                
+                
+            </nav>
+        </header>
+        <main id="main" tabindex="-1">
+            
+
+<article class="post">
+    <header>
+        <h1>[译]通过例子学子类型推理（九）：匹配通配符、记录扩展和行多态</h1>
+    </header>
+
+    
+    <div class="article-info">
+        
+        <div class="article-date">2021-04-09</div>
+        
+        <div class="article-taxonomies">
+            
+                <ul class="article-tags">
+                    
+                    <li><a href="https://firecodelab.com/tags/translate/">#translate</a></li>
+                    
+                    <li><a href="https://firecodelab.com/tags/compiler/">#compiler</a></li>
+                    
+                    <li><a href="https://firecodelab.com/tags/type-inference/">#type inference</a></li>
+                    
+                </ul>
+            
+        </div>
+        
+        <div class="article-original">[<a href="https:&#x2F;&#x2F;blog.polybdenum.com&#x2F;2020&#x2F;08&#x2F;29&#x2F;subtype-inference-by-example-part-9-nonexhaustive-matching-record-extensions-and-row-polymorphism.html" target="_blank">view original</a>]</div>
+        
+    </div>
+
+
+    <div class="content">
+        <p><a href="/blog/subtype-inference-by-example-part-8-mutability">上周</a>，我们为 cubiml 添加了可变性。本周我们将介绍通配符匹配模式和记录扩展。</p>
+<h2 id="pi-pei-tong-pei-fu">匹配通配符</h2>
+<p>到目前为止，我们的匹配表达式一直是<em>详尽的</em>，这意味着它们需要列出一系列的 case 来检查，如果向匹配表达式传递任何不在 case 列表中的内容，都会导致编译时错误。例如，下面的代码</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#b48ead;">let </span><span style="color:#bf616a;">area </span><span style="color:#c0c5ce;">= fun arg -&gt;
+    </span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> arg </span><span style="color:#b48ead;">with
+        | </span><span style="color:#c0c5ce;">`Square </span><span style="color:#bf616a;">x </span><span style="color:#c0c5ce;">-&gt; x.len *. x.len
+        </span><span style="color:#b48ead;">| </span><span style="color:#c0c5ce;">`Rect </span><span style="color:#bf616a;">x </span><span style="color:#c0c5ce;">-&gt; x.height *. x.width;
+
+area `Circle {radius=</span><span style="color:#d08770;">1.2</span><span style="color:#c0c5ce;">}
+</span></code></pre>
+<p>导致类型错误，因为 <code>Circle</code> 不在匹配表达式处理的 case 列表中。</p>
+<pre style="background-color:#2b303b;">
+<code><span style="color:#c0c5ce;">TypeError: Unhandled case `Circle
+Note: Case originates here
+        | `Rect x -&gt; x.height *. x.width;
+
+area `Circle {radius=1.2}
+     ^~~~~~~
+But it is not handled here.
+let area = fun arg -&gt;
+    match arg with
+          ^~~
+        | `Square x -&gt; x.len *. x.len
+        | `Rect x -&gt; x.height *. x.width;
+</span></code></pre>
+<p>大多数情况下，这就是你想要的。然而，有时你可能不知道全部可能的 case，你只想有个“默认”或“其他”分支，并对任何意外 case 进行通用处理。或者，你可能知道完整的可能 case 集，但希望以同样的方式处理其中的大部分情况。这些情况可以通过<em>通配符</em>匹配模式来处理。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#b48ead;">let </span><span style="color:#bf616a;">area </span><span style="color:#c0c5ce;">= fun arg -&gt;
+    </span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> arg </span><span style="color:#b48ead;">with
+        | </span><span style="color:#c0c5ce;">`Square </span><span style="color:#bf616a;">x </span><span style="color:#c0c5ce;">-&gt; x.len *. x.len
+        </span><span style="color:#b48ead;">| </span><span style="color:#c0c5ce;">`Rect </span><span style="color:#bf616a;">x </span><span style="color:#c0c5ce;">-&gt; x.height *. x.width
+        </span><span style="color:#b48ead;">|  </span><span style="color:#d08770;">_ </span><span style="color:#c0c5ce;">-&gt; &quot;</span><span style="color:#a3be8c;">error: unexpected case</span><span style="color:#c0c5ce;">&quot;;
+
+area `Circle {radius=</span><span style="color:#d08770;">1.2</span><span style="color:#c0c5ce;">}
+</span></code></pre>
+<p>不在匹配模式中列出标签(如 <code> `Square x</code>)，而只列出标识符，(上例中的 <code>_</code>)。这样的<em>通配符</em>模式可以匹配任何可能的标签值。</p>
+<p>在上面的例子中，“默认”处理器实际上并没有使用输入值，所以我们只是在匹配模式中把它绑定到 <code>_</code>。然而，任何标识符都可以在这里使用，并且像往常一样在匹配臂的主体中创建一个带有该名称的变量。例如，下面的例子会打印出错误值（使用在其他地方定义的假设的 <code>debug</code> 函数）。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#b48ead;">let </span><span style="color:#bf616a;">area </span><span style="color:#c0c5ce;">= fun arg -&gt;
+    </span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> arg </span><span style="color:#b48ead;">with
+        | </span><span style="color:#c0c5ce;">`Square </span><span style="color:#bf616a;">x </span><span style="color:#c0c5ce;">-&gt; x.len *. x.len
+        </span><span style="color:#b48ead;">| </span><span style="color:#c0c5ce;">`Rect </span><span style="color:#bf616a;">x </span><span style="color:#c0c5ce;">-&gt; x.height *. x.width
+        </span><span style="color:#b48ead;">|  </span><span style="color:#bf616a;">x </span><span style="color:#c0c5ce;">-&gt; &quot;</span><span style="color:#a3be8c;">Error: Expected a Square or Rect, got </span><span style="color:#c0c5ce;">&quot; ^ (debug x) ^ &quot;</span><span style="color:#a3be8c;"> instead.</span><span style="color:#c0c5ce;">&quot;;
+
+area `Circle {radius=</span><span style="color:#d08770;">1.2</span><span style="color:#c0c5ce;">}
+</span></code></pre>
+<p>上面的例子其实根本不关心 <code>_</code> 或 <code>x</code> 变量的类型。然而，当我们把类型系统做得更聪明一些，在知道没有采取的分支时给绑定变量一个<em>改善的</em>类型，也就是没有显式匹配的 case，这时，“通配符”的真正威力就来了。例如，我们希望上面的 <code>x</code> 具有“与 <code>arg</code> 相同的类型，并且不是 <code>Square</code> 或 <code>Rect</code> ”的类型。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#b48ead;">let </span><span style="color:#bf616a;">area </span><span style="color:#c0c5ce;">= fun arg -&gt;
+    </span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> arg </span><span style="color:#b48ead;">with
+        | </span><span style="color:#c0c5ce;">`Square </span><span style="color:#bf616a;">x </span><span style="color:#c0c5ce;">-&gt; x.len *. x.len
+        </span><span style="color:#b48ead;">| </span><span style="color:#c0c5ce;">`Rect </span><span style="color:#bf616a;">x </span><span style="color:#c0c5ce;">-&gt; x.height *. x.width;
+
+area `Square {len=</span><span style="color:#d08770;">4.</span><span style="color:#c0c5ce;">};
+area `Rect {height=</span><span style="color:#d08770;">4.</span><span style="color:#c0c5ce;">; width=</span><span style="color:#d08770;">2.5</span><span style="color:#c0c5ce;">};
+
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">area2 </span><span style="color:#c0c5ce;">= fun arg -&gt;
+    </span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> arg </span><span style="color:#b48ead;">with
+        | </span><span style="color:#c0c5ce;">`Circle </span><span style="color:#bf616a;">x </span><span style="color:#c0c5ce;">-&gt; x.radius *. x.radius *. </span><span style="color:#d08770;">3.1415926
+        </span><span style="color:#b48ead;">| </span><span style="color:#bf616a;">x </span><span style="color:#c0c5ce;">-&gt; area x;
+
+area2 `Square {len=</span><span style="color:#d08770;">4.</span><span style="color:#c0c5ce;">};
+area2 `Rect {height=</span><span style="color:#d08770;">4.</span><span style="color:#c0c5ce;">; width=</span><span style="color:#d08770;">2.5</span><span style="color:#c0c5ce;">};
+area2 `Circle {radius=</span><span style="color:#d08770;">1.2</span><span style="color:#c0c5ce;">}
+</span></code></pre>
+<p>这允许我们做一些像上面的例子一样的事情，即把通配符变量传给其他地方的第二个匹配。由于 <code>area2</code> 中的 <code>x</code> 是静态已知的，不是 <code>Circle</code>，编译器允许我们将它传递给原始 <code>area</code> 函数中的匹配，即使 <code>area</code> 不处理 <code>Circle</code> 情况。</p>
+<p>这使得我们可以做一些事情，像上面的例子一样，以完全类型安全和静态检查的方式，在一个地方匹配一些 case，并将其他 case 的处理推迟到代码的其他部分。然而，它实际上比这更强大，因为我们不需要单一、线性的匹配链。我们可以添加、删除和更改 case，在中间添加任意的条件逻辑等等，并且仍然可以在编译时让编译器检查一切。</p>
+<p>说完了这些，是时候实现通配符匹配了。</p>
+<h3 id="yu-fa-he-ast">语法和 AST</h3>
+<p>这一次，所需要的解析器改变比平时更大。首先，抽象语法树。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">@@ -</span><span style="color:#d08770;">36</span><span style="color:#c0c5ce;">,</span><span style="color:#d08770;">7 </span><span style="color:#c0c5ce;">+</span><span style="color:#d08770;">36</span><span style="color:#c0c5ce;">,</span><span style="color:#d08770;">12 </span><span style="color:#c0c5ce;">@@ </span><span style="color:#b48ead;">pub enum </span><span style="color:#c0c5ce;">OpType {
+ }
+
+ </span><span style="color:#b48ead;">type </span><span style="color:#c0c5ce;">VarDefinition = (String, Box&lt;Expr&gt;);
+-</span><span style="color:#b48ead;">type </span><span style="color:#c0c5ce;">CaseMatchPattern = (String, String);
++
++#[</span><span style="color:#bf616a;">derive</span><span style="color:#c0c5ce;">(Debug)]
++</span><span style="color:#b48ead;">pub enum </span><span style="color:#c0c5ce;">Pattern {
++    Case(String, String),
++    Wildcard(String),
++}
+
+ #[</span><span style="color:#bf616a;">derive</span><span style="color:#c0c5ce;">(Debug)]
+ </span><span style="color:#b48ead;">pub enum </span><span style="color:#c0c5ce;">Expr {
+@@ -</span><span style="color:#d08770;">49</span><span style="color:#c0c5ce;">,</span><span style="color:#d08770;">7 </span><span style="color:#c0c5ce;">+</span><span style="color:#d08770;">54</span><span style="color:#c0c5ce;">,</span><span style="color:#d08770;">7 </span><span style="color:#c0c5ce;">@@ </span><span style="color:#b48ead;">pub enum </span><span style="color:#c0c5ce;">Expr {
+     Let(VarDefinition, Box&lt;Expr&gt;),
+     LetRec(Vec&lt;VarDefinition&gt;, Box&lt;Expr&gt;),
+     Literal(Literal, Spanned&lt;String&gt;),
+-    Match(Box&lt;Expr&gt;, Vec&lt;(Spanned&lt;CaseMatchPattern&gt;, Box&lt;Expr&gt;)&gt;, Span),
++    Match(Box&lt;Expr&gt;, Vec&lt;(Spanned&lt;Pattern&gt;, Box&lt;Expr&gt;)&gt;, Span),
+     NewRef(Box&lt;Expr&gt;, Span),
+     Record(Spanned&lt;Vec&lt;(Spanned&lt;String&gt;, Box&lt;Expr&gt;)&gt;&gt;),
+     RefGet(Spanned&lt;Box&lt;Expr&gt;&gt;),
+
+</span></code></pre>
+<p>表达可能在最后有通配符匹配的自然方法是，像之前那样，只有 case 匹配列表，再在后面加上可选的通配符匹配字段。然而，试图确保一个匹配中最多只有一个通配符模式，并且通配符只能出现在匹配的最后，这在语法级别上很难做到。相反，我们在语法层面将匹配指定为模式列表，每个模式都可以是 case 或通配符，然后在类型检查器前端确保上述有效性约束。</p>
+<p>因此，我们用新的 <code>Pattern</code> 枚举代替 <code>CaseMatchPattern</code>，它可以容纳 <code>Case</code> 或 <code>Wildcard</code> 模式，并更新语法来匹配。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">     &lt;Spanned&lt;Tag&gt;&gt; &lt;CaseExpr&gt; =&gt; Box::new(ast::Expr::Case(&lt;&gt;)),
+ }
+
+-CaseMatchPattern = {
+-    Tag Ident,
++MatchPattern: ast::Pattern = {
++    Tag Ident =&gt; ast::Pattern::Case(&lt;&gt;),
++    Ident =&gt; ast::Pattern::Wildcard(&lt;&gt;),
+ }
+ MatchArm = {
+-    &lt;Spanned&lt;CaseMatchPattern&gt;&gt; &quot;</span><span style="color:#a3be8c;">-&gt;</span><span style="color:#c0c5ce;">&quot; &lt;CompareExpr&gt;,
++    &quot;</span><span style="color:#a3be8c;">|</span><span style="color:#c0c5ce;">&quot; &lt;Spanned&lt;MatchPattern&gt;&gt; &quot;</span><span style="color:#a3be8c;">-&gt;</span><span style="color:#c0c5ce;">&quot; &lt;CompareExpr&gt;,
+ }
+</span></code></pre>
+<p>我还借此机会稍微修改了一下匹配语法，要求在初始匹配臂前加一个 <code>|</code> ，简化了语法，避免了在重新排列匹配臂时需要增删 <code>|</code> ，这是我希望在 cubiml 的原始版本中想到的另一个改变。</p>
+<pre style="background-color:#2b303b;">
+<code><span style="color:#c0c5ce;">-MatchSub = &quot;match&quot; &lt;Spanned&lt;Expr&gt;&gt; &quot;with&quot; &lt;SepList&lt;MatchArm, &quot;|&quot;&gt;&gt;;
++MatchSub = &quot;match&quot; &lt;Spanned&lt;Expr&gt;&gt; &quot;with&quot; &lt;MatchArm+&gt;;
+</span></code></pre><h3 id="lei-xing-jian-cha-qi-qian-duan">类型检查器前端</h3>
+<p>匹配的前端代码也有不少变化。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">Match(match_expr, cases, span) =&gt; {
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> match_type = </span><span style="color:#96b5b4;">check_expr</span><span style="color:#c0c5ce;">(engine, bindings, match_expr)?;
+    </span><span style="color:#b48ead;">let </span><span style="color:#c0c5ce;">(result_type, result_bound) = engine.</span><span style="color:#96b5b4;">var</span><span style="color:#c0c5ce;">();
+
+    </span><span style="color:#65737e;">// Result types from the match arms
+    </span><span style="color:#b48ead;">let mut</span><span style="color:#c0c5ce;"> case_type_pairs = Vec::with_capacity(cases.</span><span style="color:#96b5b4;">len</span><span style="color:#c0c5ce;">());
+    </span><span style="color:#b48ead;">let mut</span><span style="color:#c0c5ce;"> wildcard_type = None;
+
+    </span><span style="color:#65737e;">// Pattern reachability checking
+    </span><span style="color:#b48ead;">let mut</span><span style="color:#c0c5ce;"> case_names = HashMap::with_capacity(cases.</span><span style="color:#96b5b4;">len</span><span style="color:#c0c5ce;">());
+    </span><span style="color:#b48ead;">let mut</span><span style="color:#c0c5ce;"> wildcard = None;
+
+    </span><span style="color:#b48ead;">for </span><span style="color:#c0c5ce;">((pattern, pattern_span), rhs_expr) in cases {
+        </span><span style="color:#b48ead;">if let </span><span style="color:#c0c5ce;">Some(old_span) = wildcard {
+            </span><span style="color:#b48ead;">return </span><span style="color:#c0c5ce;">Err(SyntaxError::new2(
+                &quot;</span><span style="color:#a3be8c;">SyntaxError: Unreachable match pattern</span><span style="color:#c0c5ce;">&quot;,
+                *pattern_span,
+                &quot;</span><span style="color:#a3be8c;">Note: Unreachable due to previous wildcard pattern here</span><span style="color:#c0c5ce;">&quot;,
+                old_span,
+            ));
+        }
+
+        </span><span style="color:#b48ead;">use </span><span style="color:#c0c5ce;">ast::Pattern::*;
+        </span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> pattern {
+            Case(tag, name) =&gt; {
+                </span><span style="color:#b48ead;">if let </span><span style="color:#c0c5ce;">Some(old_span) = case_names.</span><span style="color:#96b5b4;">insert</span><span style="color:#c0c5ce;">(&amp;*tag, *pattern_span) {
+                    </span><span style="color:#b48ead;">return </span><span style="color:#c0c5ce;">Err(SyntaxError::new2(
+                        &quot;</span><span style="color:#a3be8c;">SyntaxError: Unreachable match pattern</span><span style="color:#c0c5ce;">&quot;,
+                        *pattern_span,
+                        &quot;</span><span style="color:#a3be8c;">Note: Unreachable due to previous case pattern here</span><span style="color:#c0c5ce;">&quot;,
+                        old_span,
+                    ));
+                }
+
+                </span><span style="color:#b48ead;">let </span><span style="color:#c0c5ce;">(wrapped_type, wrapped_bound) = engine.</span><span style="color:#96b5b4;">var</span><span style="color:#c0c5ce;">();
+                case_type_pairs.</span><span style="color:#96b5b4;">push</span><span style="color:#c0c5ce;">((tag.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">(), wrapped_bound));
+
+                </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> rhs_type = bindings.</span><span style="color:#96b5b4;">in_child_scope</span><span style="color:#c0c5ce;">(|</span><span style="color:#bf616a;">bindings</span><span style="color:#c0c5ce;">| {
+                    bindings.</span><span style="color:#96b5b4;">insert</span><span style="color:#c0c5ce;">(name.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">(), wrapped_type);
+                    </span><span style="color:#96b5b4;">check_expr</span><span style="color:#c0c5ce;">(engine, bindings, rhs_expr)
+                })?;
+                engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(rhs_type, result_bound)?;
+            }
+            Wildcard(name) =&gt; {
+                wildcard = Some(*pattern_span);
+
+                </span><span style="color:#b48ead;">let </span><span style="color:#c0c5ce;">(wrapped_type, wrapped_bound) = engine.</span><span style="color:#96b5b4;">var</span><span style="color:#c0c5ce;">();
+                wildcard_type = Some(wrapped_bound);
+
+                </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> rhs_type = bindings.</span><span style="color:#96b5b4;">in_child_scope</span><span style="color:#c0c5ce;">(|</span><span style="color:#bf616a;">bindings</span><span style="color:#c0c5ce;">| {
+                    bindings.</span><span style="color:#96b5b4;">insert</span><span style="color:#c0c5ce;">(name.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">(), wrapped_type);
+                    </span><span style="color:#96b5b4;">check_expr</span><span style="color:#c0c5ce;">(engine, bindings, rhs_expr)
+                })?;
+                engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(rhs_type, result_bound)?;
+            }
+        }
+    }
+
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> bound = engine.</span><span style="color:#96b5b4;">case_use</span><span style="color:#c0c5ce;">(case_type_pairs, wildcard_type, *span);
+    engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(match_type, bound)?;
+
+    Ok(result_type)
+}
+</span></code></pre>
+<p>这主要是由于需要报告通配符匹配的非法组合的语法错误（即通配符模式之后出现的任何内容都是语法错误，因为通配符之后的任何内容都是无法到达的）。</p>
+<p>回顾下之前，我们报告了重复的 case 标签的语法错误，维护了从标签到跨度的映射 <code>case_names</code> 以便于实现这一点。每当处理 case 模式时，我们首先对照 <code>case_names</code> 检查标签。如果该标签已经存在，我们会返回错误 <code>&quot;SyntaxError: Repeated match case&quot;</code>，使用新跨度和从映射中得到的前一次出现的跨度。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#65737e;">// Pattern reachability checking
+</span><span style="color:#b48ead;">let mut</span><span style="color:#c0c5ce;"> case_names = HashMap::with_capacity(cases.</span><span style="color:#96b5b4;">len</span><span style="color:#c0c5ce;">());
+</span><span style="color:#b48ead;">let mut</span><span style="color:#c0c5ce;"> wildcard = None;
+</span></code></pre><pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#b48ead;">if let </span><span style="color:#c0c5ce;">Some(old_span) = wildcard {
+    </span><span style="color:#b48ead;">return </span><span style="color:#c0c5ce;">Err(SyntaxError::new2(
+        &quot;</span><span style="color:#a3be8c;">SyntaxError: Unreachable match pattern</span><span style="color:#c0c5ce;">&quot;,
+        *pattern_span,
+        &quot;</span><span style="color:#a3be8c;">Note: Unreachable due to previous wildcard pattern here</span><span style="color:#c0c5ce;">&quot;,
+        old_span,
+    ));
+}
+</span></code></pre>
+<p>新代码相当类似。除了 <code>case_names</code> 映射之外，还有变量 <code>wildcard: Option&lt;Span&gt;</code>，它可选地持有一个指向之前看到的通配符模式（如果有的话）的跨度。除了重复的 case 检查之外，我们还有第二个通配符的有效性检查。每当处理一个模式时，不管它是 case 还是通配符模式，我们首先检查 <code>wildcard</code> 变量。如果是 <code>Some</code>，即已经看到了通配符模式，我们就会报错，因为通配符模式之后的任何东西都是无法到达的。此外，错误信息文本也已更新。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">            Wildcard(name) =&gt; {
+                wildcard = Some(*pattern_span);
+
+                </span><span style="color:#b48ead;">let </span><span style="color:#c0c5ce;">(wrapped_type, wrapped_bound) = engine.</span><span style="color:#96b5b4;">var</span><span style="color:#c0c5ce;">();
+                wildcard_type = Some(wrapped_bound);
+
+                </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> rhs_type = bindings.</span><span style="color:#96b5b4;">in_child_scope</span><span style="color:#c0c5ce;">(|</span><span style="color:#bf616a;">bindings</span><span style="color:#c0c5ce;">| {
+                    bindings.</span><span style="color:#96b5b4;">insert</span><span style="color:#c0c5ce;">(name.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">(), wrapped_type);
+                    </span><span style="color:#96b5b4;">check_expr</span><span style="color:#c0c5ce;">(engine, bindings, rhs_expr)
+                })?;
+                engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(rhs_type, result_bound)?;
+            }
+</span></code></pre>
+<p>除此之外，我们还有检查通配符模式匹配臂右侧的实际代码。这与 case 模式的代码几乎完全相同，但 Rust 的借用检查器使得这里的代码难以避免重复。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> bound = engine.</span><span style="color:#96b5b4;">case_use</span><span style="color:#c0c5ce;">(case_type_pairs, wildcard_type, *span);
+</span></code></pre>
+<p>最后，我们当然需要将通配符匹配的变量（如果有的话）传递给 case 类型构造器。</p>
+<h3 id="lei-xing-jian-cha-qi-he-xin">类型检查器核心</h3>
+<p>首先，我们在 <code>UCase</code> 用类型头添加新字段 <code>wildcard</code>，如果有通配符模式，则给出绑定变量的用类型，否则为 <code>None</code>。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">UCase {
+    cases: HashMap&lt;String, Use&gt;,
+    wildcard: Option&lt;Use&gt;,
+},
+</span></code></pre><pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">case_use</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">cases</span><span style="color:#c0c5ce;">: Vec&lt;(String, Use)&gt;, </span><span style="color:#bf616a;">wildcard</span><span style="color:#c0c5ce;">: Option&lt;Use&gt;, </span><span style="color:#bf616a;">span</span><span style="color:#c0c5ce;">: Span) -&gt; Use {
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> cases = cases.</span><span style="color:#96b5b4;">into_iter</span><span style="color:#c0c5ce;">().</span><span style="color:#96b5b4;">collect</span><span style="color:#c0c5ce;">();
+    </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">new_use</span><span style="color:#c0c5ce;">(UTypeHead::UCase { cases, wildcard }, span)
+}
+</span></code></pre>
+<p>我们还更新了构造器函数来传递它。</p>
+<p>现在到了最有趣的部分 - <code>check_heads</code> 的实现。这一部分比较棘手。考虑下面的代码。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#b48ead;">match </span><span style="color:#c0c5ce;">(`Tag x) </span><span style="color:#b48ead;">with
+    | </span><span style="color:#c0c5ce;">`CaseA </span><span style="color:#bf616a;">a </span><span style="color:#c0c5ce;">-&gt; _
+    </span><span style="color:#b48ead;">| </span><span style="color:#c0c5ce;">`CaseB </span><span style="color:#bf616a;">b </span><span style="color:#c0c5ce;">-&gt; _
+</span></code></pre>
+<p>回顾一下，在现有的系统下，这将导致对 <code>check_heads</code> 的调用，大致可以用下面的伪代码来描述：</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">lhs = VCase{case=(&quot;</span><span style="color:#a3be8c;">Tag</span><span style="color:#c0c5ce;">&quot;, x)}
+rhs = UCase{cases=Map{&quot;</span><span style="color:#a3be8c;">CaseA</span><span style="color:#c0c5ce;">&quot; =&gt; a, &quot;</span><span style="color:#a3be8c;">CaseB</span><span style="color:#c0c5ce;">&quot; =&gt; b}}
+</span><span style="color:#96b5b4;">check_heads</span><span style="color:#c0c5ce;">(lhs, rhs)
+</span></code></pre>
+<p>其中 <code>x</code>、<code>a</code>、<code>b</code> 等是同名变量类型节点的替身。</p>
+<p>目前我们在 <code>check_heads</code> 中检查的方法是，取左边的标签（<code>&quot;Tag&quot;</code>）并在右边的 <code>cases</code> 映射中查找。如果标签不存在，返回类型错误。否则，将从左边的子节点向右边的相应子节点添加一个流约束。因此，如果标签是 <code>&quot;CaseA&quot;</code>，我们将添加流关系 <code>x -&gt; a</code>，如果是 <code>&quot;CaseB&quot;</code>，我们将添加 <code>x -&gt; b</code>。</p>
+<p>为了实现具有所需语义的通配符匹配，我们必须稍微改变一下。对于像下面这样的代码</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#b48ead;">match </span><span style="color:#c0c5ce;">(`Tag x) </span><span style="color:#b48ead;">with
+    | </span><span style="color:#c0c5ce;">`CaseA </span><span style="color:#bf616a;">a </span><span style="color:#c0c5ce;">-&gt; _
+    </span><span style="color:#b48ead;">| </span><span style="color:#c0c5ce;">`CaseB </span><span style="color:#bf616a;">b </span><span style="color:#c0c5ce;">-&gt; _
+    </span><span style="color:#b48ead;">| </span><span style="color:#bf616a;">c </span><span style="color:#c0c5ce;">-&gt; _
+</span></code></pre>
+<p>我们将有以下伪代码。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">lhs = VCase{case=(&quot;</span><span style="color:#a3be8c;">Tag</span><span style="color:#c0c5ce;">&quot;, x)}
+rhs = UCase{cases=Map{&quot;</span><span style="color:#a3be8c;">CaseA</span><span style="color:#c0c5ce;">&quot; =&gt; a, &quot;</span><span style="color:#a3be8c;">CaseB</span><span style="color:#c0c5ce;">&quot; =&gt; b}, wildcard=Some(c)}
+</span><span style="color:#96b5b4;">check_heads</span><span style="color:#c0c5ce;">(lhs, rhs)
+</span></code></pre>
+<p><code>check_heads</code> 的处理方式与之前类似，只是当左侧的标签不在右边的 <code>cases</code> 映射中时，我们会查阅右边的 <code>wildcard</code> 字段。如果它是 <code>None</code>，我们会像之前一样返回类型错误。如果它<em>不</em>是 none，我们从 <em>lhs</em>（不是 <code>x</code>！）向该变量添加一个流约束，即 <code>lhs -&gt; c</code>，其中 <code>lhs = VCase{case=(&quot;Tag&quot;, x)}</code> 是包含要检查的头部的<em>整个</em>类型节点。</p>
+<p>在这点上，我们遇到了问题 - <code>lhs</code> 实际上并没有传递给 <code>check_heads</code>。到目前为止，<code>check_heads</code> 只在被检查的两个节点的子节点之间建立了流关系。这意味着不需要传递父节点本身，只需要传递它们的<em>头</em>。然而，现在我们需要得到整个 lhs 节点的<em>指针</em>（即索引）。</p>
+<p>这意味着必须改变 <code>check_heads</code> 的签名，并添加新的 <code>lhs_index</code> 和 <code>rhs_index</code> 参数。我们现在实际上并没有使用 <code>rhs_index</code>，但保持一致挺好，以后会使用它。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#b48ead;">fn </span><span style="color:#8fa1b3;">check_heads</span><span style="color:#c0c5ce;">(
+    </span><span style="color:#bf616a;">lhs_ind</span><span style="color:#c0c5ce;">: ID,
+    </span><span style="color:#bf616a;">lhs</span><span style="color:#c0c5ce;">: &amp;(</span><span style="color:#bf616a;">VTypeHead</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">Span</span><span style="color:#c0c5ce;">),
+    </span><span style="color:#bf616a;">rhs_ind</span><span style="color:#c0c5ce;">: ID,
+    </span><span style="color:#bf616a;">rhs</span><span style="color:#c0c5ce;">: &amp;(</span><span style="color:#bf616a;">UTypeHead</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">Span</span><span style="color:#c0c5ce;">),
+    </span><span style="color:#bf616a;">out</span><span style="color:#c0c5ce;">: &amp;</span><span style="color:#b48ead;">mut </span><span style="color:#c0c5ce;">Vec&lt;(Value, Use)&gt;,
+) -&gt; Result&lt;(), TypeError&gt; {
+</span></code></pre><pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">     </span><span style="color:#b48ead;">while let </span><span style="color:#c0c5ce;">Some((lhs, rhs)) = type_pairs_to_check.</span><span style="color:#96b5b4;">pop</span><span style="color:#c0c5ce;">() {
+         </span><span style="color:#b48ead;">if let </span><span style="color:#c0c5ce;">TypeNode::Value(lhs_head) = &amp;</span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.types[lhs] {
+             </span><span style="color:#b48ead;">if let </span><span style="color:#c0c5ce;">TypeNode::Use(rhs_head) = &amp;</span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.types[rhs] {
+-                </span><span style="color:#96b5b4;">check_heads</span><span style="color:#c0c5ce;">(lhs_head, rhs_head, &amp;</span><span style="color:#b48ead;">mut</span><span style="color:#c0c5ce;"> pending_edges)?;
++                </span><span style="color:#96b5b4;">check_heads</span><span style="color:#c0c5ce;">(lhs, lhs_head, rhs, rhs_head, &amp;</span><span style="color:#b48ead;">mut</span><span style="color:#c0c5ce;"> pending_edges)?;
+             }
+         }
+     }
+</span></code></pre>
+<p>现在我们把所需的数据传给了 <code>check_heads</code>，是时候更新 <code>check_heads</code> 中的 case 分支了，它实现了上面描述的逻辑。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">(
+    &amp;VCase { case: (</span><span style="color:#b48ead;">ref</span><span style="color:#c0c5ce;"> name, lhs2) },
+    &amp;UCase {
+        cases: </span><span style="color:#b48ead;">ref</span><span style="color:#c0c5ce;"> cases2,
+        wildcard,
+    },
+) =&gt; {
+    </span><span style="color:#65737e;">// Check if the right case is handled
+    </span><span style="color:#b48ead;">if let </span><span style="color:#c0c5ce;">Some(&amp;rhs2) = cases2.</span><span style="color:#96b5b4;">get</span><span style="color:#c0c5ce;">(name) {
+        out.</span><span style="color:#96b5b4;">push</span><span style="color:#c0c5ce;">((lhs2, rhs2));
+        Ok(())
+    } </span><span style="color:#b48ead;">else if let </span><span style="color:#c0c5ce;">Some(rhs2) = wildcard {
+        out.</span><span style="color:#96b5b4;">push</span><span style="color:#c0c5ce;">((Value(lhs_ind), rhs2));
+        Ok(())
+    } </span><span style="color:#b48ead;">else </span><span style="color:#c0c5ce;">{
+        Err(TypeError::new2(
+            format!(&quot;</span><span style="color:#a3be8c;">TypeError: Unhandled case </span><span style="color:#d08770;">{}</span><span style="color:#96b5b4;">\n</span><span style="color:#a3be8c;">Note: Case originates here</span><span style="color:#c0c5ce;">&quot;, name),
+            lhs.</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">,
+            &quot;</span><span style="color:#a3be8c;">But it is not handled here.</span><span style="color:#c0c5ce;">&quot;,
+            rhs.</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">,
+        ))
+    }
+}
+</span></code></pre><h2 id="ji-lu-kuo-zhan">记录扩展</h2>
+<p>到目前为止，记录类型和 case 类型之间有一个显著的对称性。特别是，case 值类型与记录用类型具有完全相同的结构，case 用类型与记录值类型具有相同的结构。既然我们给 case 用类型添加了新功能，那么问题自然而然就来了，记录值类型的等价功能是什么呢？答案是<em>记录扩展</em>。</p>
+<p>回顾一下，在添加通配符匹配之后，case 用类型头现在看起来是这样的</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">UCase {
+    cases: HashMap&lt;String, Use&gt;,
+    wildcard: Option&lt;Use&gt;,
+},
+</span></code></pre>
+<p>之前只是添加了字符串到用类型的映射，但今天我们添加了可选的额外的用类型，名为 <code>wildcard</code>。对记录的相应改变是增加可选的额外的值类型，我们将其命名为 <code>proto</code>。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">VObj {
+    fields: HashMap&lt;String, Value&gt;,
+    proto: Option&lt;Value&gt;,
+},
+</span></code></pre>
+<p>对于 case，其语义是我们根据 case 映射检查每个值，如果不存在，就给通配符添加一个流约束（如果存在）。本质上，<code>wildcard</code> 是一个额外的值，如果所有的 case 不在显式列出的 case 中，我们就把它们<em>委托</em>给它。</p>
+<p>对于记录来说，相当于我们有一个显式列出的<em>字段</em>集，任何不在该列表中的字段查找都会被委托给 <code>proto </code>值来代替。这基本上是同一种说法“如果你在这里没有找到你要找的字段，这里是另一个寻找的地方”。</p>
+<p>这听起来很像继承，在 JavaScript 中，继承是用<em>原型</em>来完成的，因此使用这个名字。至于用户可见的语言功能，实际的效果是，我们可以取一条记录，扩展它来创建一条有额外字段的新记录，这条记录也拥有旧记录的所有字段，或者等价于把缺失的字段查找委托给旧记录。因此，我们把这叫做<em>记录扩展</em>。</p>
+<p>很遗憾，OCaml 不支持记录扩展，所以我们必须自己编造一些语法，或者更准确的说，借用 Elm 的记录扩展语法来代替。在 Elm 中，<a href="https://elm-lang.org/news/compilers-as-assistants#simplified-records">在 0.16 版本之前</a>，你可以用 <code>{ foo |</code> 开始一条记录，把 <code>foo</code> 的所有字段都包含在新记录中。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#b48ead;">let </span><span style="color:#bf616a;">foo </span><span style="color:#c0c5ce;">= {a=</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">; b=&quot;&quot;; c=</span><span style="color:#d08770;">false</span><span style="color:#c0c5ce;">};
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">bar </span><span style="color:#c0c5ce;">= {foo | a=</span><span style="color:#d08770;">true</span><span style="color:#c0c5ce;">; d=-</span><span style="color:#d08770;">23</span><span style="color:#c0c5ce;">}
+</span></code></pre>
+<p>请注意，“prototype” 值不一定是静态已知的。事实上，它可以是任何任意的表达式，只要你把它放在括号里。</p>
+<pre style="background-color:#2b303b;">
+<code><span style="color:#c0c5ce;">&gt;&gt; let baz = {(if foo.c then foo else bar) | c=true}
+
+{a=true; b=&quot;&quot;; c=true; d=-23}
+</span></code></pre>
+<p>前面，我们描述了使用原型进行记录扩展，但实际上并不一定是这样实现的。事实上，有两种不同的方式来查找记录扩展。</p>
+<p>第一种视图是我们已经介绍过的继承视图，每条记录都包含了在其定义中明确定义的字段，同时还有一个可选的到原型值的链接，缺失的字段将在运行时进行查找。另一个视图是复制视图，在创建记录时，记录<em>复制</em>其原型的所有字段，之后不维护任何与原型的链接。</p>
+<p>由于我们的记录是不可变的，所以这两种视图之间没有可观察到的行为差异。事实上，cubiml 在类型检查器中使用继承视图，在实际生成的代码中使用复制视图。生成的代码在创建时复制了父对象的所有字段，而不是使用 JavaScript 原型，所以 <code>{a=1; b=2}</code> 和 <code>{{a=1; b=6}。| b=2}</code> 在运行时产生<em>同样</em>的值。</p>
+<p>这也是为什么在上面的 <code>baz</code> 例子中，REPL 打印出 <code>{a=true; b=&quot;&quot;; c=true; d=-23}</code>，而不是 <code>{{{a=1; b=&quot;&quot;; c=false} | a=true; d=-23} | c=true}</code> 这样的东西，就像在运行时跟踪链接一样。</p>
+<h3 id="shi-xian">实现</h3>
+<p>总之，说完了这些，就该真正实现记录扩展了。这和通配符匹配的实现非常相似，所以我就不做太详细的介绍了。</p>
+<p>像往常一样，我们从 AST 和语法开始。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">-    Record(Spanned&lt;Vec&lt;(Spanned&lt;String&gt;, Box&lt;Expr&gt;)&gt;&gt;),
++    Record(Option&lt;Box&lt;Expr&gt;&gt;, Vec&lt;(Spanned&lt;String&gt;, Box&lt;Expr&gt;)&gt;, Span),
+
+
++RecordExtension = {
++    &lt;CallExpr&gt; &quot;</span><span style="color:#a3be8c;">|</span><span style="color:#c0c5ce;">&quot;
++}
+ KeyPairExpr = {
+     &lt;Spanned&lt;Ident&gt;&gt; &quot;</span><span style="color:#a3be8c;">=</span><span style="color:#c0c5ce;">&quot; &lt;Expr&gt;,
+ }
+-RecordSub = &quot;</span><span style="color:#a3be8c;">{</span><span style="color:#c0c5ce;">&quot; &lt;SepListOpt&lt;KeyPairExpr, </span><span style="background-color:#bf616a;color:#2b303b;">&quot;</span><span style="color:#c0c5ce;">;&quot;</span><span style="color:#a3be8c;">&gt;&gt; </span><span style="color:#c0c5ce;">&quot;}&quot;</span><span style="color:#a3be8c;">;
++RecordSub = </span><span style="color:#c0c5ce;">&quot;{&quot;</span><span style="color:#a3be8c;"> &lt;RecordExtension?&gt; &lt;SepListOpt&lt;KeyPairExpr, </span><span style="color:#c0c5ce;">&quot;;&quot;</span><span style="color:#a3be8c;">&gt;&gt; </span><span style="color:#c0c5ce;">&quot;}&quot;</span><span style="color:#a3be8c;">;
+ Record: Box&lt;ast::Expr&gt; = {
+-    Spanned&lt;RecordSub&gt; =&gt; Box::new(ast::Expr::Record(&lt;&gt;)),
++    Spanned&lt;RecordSub&gt; =&gt; {
++        let ((proto, fields), span) = &lt;&gt;;
++        Box::new(ast::Expr::Record(proto, fields, span))
++    }
+ }
+
+</span></code></pre>
+<p>之后，是类型检查器前端。在这种情况下，实现就简单多了，因为我们不必像以前那样费心去追踪无法到达的匹配模式的语法错误。我们要做的就是当 <code>proto</code> 值存在的话对其进行类型检查，并将其传递给值类型构造器。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">-        Record((fields, span)) =&gt; {
++        Record(proto, fields, span) =&gt; {
++            </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> proto_type = </span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> proto {
++                Some(expr) =&gt; Some(</span><span style="color:#96b5b4;">check_expr</span><span style="color:#c0c5ce;">(engine, bindings, expr)?),
++                None =&gt; None,
++            };
++
+             </span><span style="color:#b48ead;">let mut</span><span style="color:#c0c5ce;"> field_names = HashMap::with_capacity(fields.</span><span style="color:#96b5b4;">len</span><span style="color:#c0c5ce;">());
+
+@@ -</span><span style="color:#d08770;">223</span><span style="color:#c0c5ce;">,</span><span style="color:#d08770;">7 </span><span style="color:#c0c5ce;">+</span><span style="color:#d08770;">259</span><span style="color:#c0c5ce;">,</span><span style="color:#d08770;">7 </span><span style="color:#c0c5ce;">@@ </span><span style="color:#b48ead;">fn </span><span style="color:#8fa1b3;">check_expr</span><span style="color:#c0c5ce;">(</span><span style="color:#bf616a;">engine</span><span style="color:#c0c5ce;">: &amp;</span><span style="color:#b48ead;">mut</span><span style="color:#c0c5ce;"> TypeCheckerCore, </span><span style="color:#bf616a;">bindings</span><span style="color:#c0c5ce;">: &amp;</span><span style="color:#b48ead;">mut</span><span style="color:#c0c5ce;"> Bindings, </span><span style="color:#bf616a;">expr</span><span style="color:#c0c5ce;">: &amp;</span><span style="color:#bf616a;">ast</span><span style="color:#c0c5ce;">:
+                 let t = check_expr(</span><span style="color:#bf616a;">engine</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">bindings</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">expr</span><span style="color:#c0c5ce;">)?;
+                 field_type_pairs.push((</span><span style="color:#bf616a;">name</span><span style="color:#c0c5ce;">.</span><span style="color:#bf616a;">clone</span><span style="color:#c0c5ce;">(), t));
+             }
+-            Ok(engine.</span><span style="color:#96b5b4;">obj</span><span style="color:#c0c5ce;">(field_type_pairs, *span))
++            Ok(engine.</span><span style="color:#96b5b4;">obj</span><span style="color:#c0c5ce;">(field_type_pairs, proto_type, *span))
+         }
+
+</span></code></pre>
+<p>最后，是类型检查器核心。在核心类型系统中的实现和上面的通配符匹配的实现是一样的，只是极性反转了。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">(
+    &amp;VObj {
+        fields: </span><span style="color:#b48ead;">ref</span><span style="color:#c0c5ce;"> fields1,
+        proto,
+    },
+    &amp;UObj { field: (</span><span style="color:#b48ead;">ref</span><span style="color:#c0c5ce;"> name, rhs2) },
+) =&gt; {
+    </span><span style="color:#65737e;">// Check if the accessed field is defined
+    </span><span style="color:#b48ead;">if let </span><span style="color:#c0c5ce;">Some(&amp;lhs2) = fields1.</span><span style="color:#96b5b4;">get</span><span style="color:#c0c5ce;">(name) {
+        out.</span><span style="color:#96b5b4;">push</span><span style="color:#c0c5ce;">((lhs2, rhs2));
+        Ok(())
+    } </span><span style="color:#b48ead;">else if let </span><span style="color:#c0c5ce;">Some(lhs2) = proto {
+        out.</span><span style="color:#96b5b4;">push</span><span style="color:#c0c5ce;">((lhs2, Use(rhs_ind)));
+        Ok(())
+    } </span><span style="color:#b48ead;">else </span><span style="color:#c0c5ce;">{
+        Err(TypeError::new2(
+            format!(&quot;</span><span style="color:#a3be8c;">TypeError: Missing field </span><span style="color:#d08770;">{}</span><span style="color:#96b5b4;">\n</span><span style="color:#a3be8c;">Note: Field is accessed here</span><span style="color:#c0c5ce;">&quot;, name),
+            rhs.</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">,
+            &quot;</span><span style="color:#a3be8c;">But the record is defined without that field here.</span><span style="color:#c0c5ce;">&quot;,
+            lhs.</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">,
+        ))
+    }
+}
+</span></code></pre><pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">-    VObj { fields: HashMap&lt;String, Value&gt; },
++    VObj {
++        fields: HashMap&lt;String, Value&gt;,
++        proto: Option&lt;Value&gt;,
++    },
+</span></code></pre><pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">-    </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">obj</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">fields</span><span style="color:#c0c5ce;">: Vec&lt;(String, Value)&gt;, </span><span style="color:#bf616a;">span</span><span style="color:#c0c5ce;">: Span) -&gt; Value {
++    </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">obj</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">fields</span><span style="color:#c0c5ce;">: Vec&lt;(String, Value)&gt;, </span><span style="color:#bf616a;">proto</span><span style="color:#c0c5ce;">: Option&lt;Value&gt;, </span><span style="color:#bf616a;">span</span><span style="color:#c0c5ce;">: Span) -&gt; Value {
+         </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> fields = fields.</span><span style="color:#96b5b4;">into_iter</span><span style="color:#c0c5ce;">().</span><span style="color:#96b5b4;">collect</span><span style="color:#c0c5ce;">();
+-        </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">new_val</span><span style="color:#c0c5ce;">(VTypeHead::VObj { fields }, span)
++        </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">new_val</span><span style="color:#c0c5ce;">(VTypeHead::VObj { fields, proto }, span)
+     }
+</span></code></pre><h2 id="xing-duo-tai">行多态</h2>
+<p>到目前为止，我们一直在类型系统中实现有用的功能，而不用担心用什么语法来描述它。不过，今天展示的功能用传统的类型语法写起来有点不方便，就像前面“与 <code>arg</code> 相同的类型，只是它不是 <code>Square</code> 或 <code>Rect</code>”的绕口令所提示的那样。</p>
+<p>为了描述记录扩展等操作的类型，人们发明了<em>行多态</em>。这就像常规的多态（即泛型）一样，只不过我们没有可以替代不同类型的类型变量，而是有<em>行变量</em>，可以替代字段集。</p>
+<p>这意味着，像 <code>fun x -&gt; {x | foo=4}</code> 这样的操作可以用 <code>row R: {R} -&gt; {R | foo: int}</code> 这样的行类型来描述。</p>
+<p>传统上，记录扩展的形式化处理包括一个限制，即输入行不包含任何新定义字段的标签。然而，在 cubiml 中，我们没有这样的限制，只是让子代中定义的字段覆盖任何从父代复制的字段，因为这在实践中更有意义，尤其是应用于通配符匹配的双重情况。但是，如果你愿意的话，可以在类型检查器中使用类似于上面所示的技术轻松实现重复字段限制。</p>
+<h3 id="let-duo-tai">Let 多态</h3>
+<p>虽然记录扩展的抽象操作是行多态的，但使用它的任何特定的 cubiml 代码都不是多态的，因为我们目前所介绍的 cubiml 版本还不支持多态。</p>
+<p>考虑以下代码</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#b48ead;">let </span><span style="color:#bf616a;">f </span><span style="color:#c0c5ce;">= fun x -&gt; {x | foo=</span><span style="color:#d08770;">4</span><span style="color:#c0c5ce;">};
+</span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> _ = f {a=</span><span style="color:#d08770;">5</span><span style="color:#c0c5ce;">; b=&quot;</span><span style="color:#a3be8c;">hello</span><span style="color:#c0c5ce;">&quot;};
+(f {c=</span><span style="color:#d08770;">8.3</span><span style="color:#c0c5ce;">}).c
+</span></code></pre>
+<p>这将导致类型错误（“缺失字段 c”），因为编译器不够聪明，没有将函数的不同输入分开。目前，类型检查器将函数调用视为给定函数的所有调用混合在一起，所以它认为第二次调用 <code>f</code> 时的 <code>.c</code> 可能会看到第一次调用 <code>f</code> 时产生的 <code>{a=5; b=&quot;hello&quot;; foo=4}</code>。</p>
+<p>目前我们所拥有的 cubiml 版本有行多态的<em>行</em>部分，但是没有<em>多态</em>部分。上面的代码只是下面代码的一个特例，下面的代码也有完全相同的问题。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#b48ead;">let </span><span style="color:#bf616a;">f </span><span style="color:#c0c5ce;">= fun x -&gt; x;
+</span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> _ = f {a=</span><span style="color:#d08770;">5</span><span style="color:#c0c5ce;">; b=&quot;</span><span style="color:#a3be8c;">hello</span><span style="color:#c0c5ce;">&quot;};
+(f {c=</span><span style="color:#d08770;">8.3</span><span style="color:#c0c5ce;">}).c
+</span></code></pre>
+<p>为了让这样的代码能够进行类型检查，我们需要让类型分析上下文敏感，让它把对函数的每一次调用都视为<em>独立</em>类型，这样，一个函数调用的输入就不会污染该函数的每次其他调用所看到的结果，类型方面。<a href="/blog/subtype-inference-by-example-part-10-let-polymorphism/">下周</a>，我们将介绍 <em>let 多态</em>，处理这个问题的标准方法。</p>
+
+    </div>
+
+
+</article>
+
+
+        </main>
+        <footer>
+            <p>
+                © 2021 firecodelab.com
+            </p>
+            <p>
+                
+                
+            </p>
+        </footer>
+    </div>
+</body>
+</html>

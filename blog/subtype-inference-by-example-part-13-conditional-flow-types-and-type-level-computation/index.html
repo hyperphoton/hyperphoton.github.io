@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="zh-cn">
+<head>
+    <meta charset="utf-8">
+    <meta name="HandheldFriendly" content="True">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="referrer" content="no-referrer-when-downgrade">
+
+    <title>[译]通过例子学子类型推理（十三）：条件流约束、存在多态和类型级计算</title>
+    <meta name="description" content="">
+
+    <link rel="stylesheet" href="https:&#x2F;&#x2F;firecodelab.com&#x2F;main.css">
+
+    
+
+    
+    
+</head>
+<body>
+    <a class="skip-main" href="#main">Skip to content</a>
+    <div class="container">
+        <header>
+            <h1 class="site-header">
+                <a href="https:&#x2F;&#x2F;firecodelab.com">Fire Code</a>
+            </h1>
+            <nav>
+                
+                
+                
+                <a  href="&#x2F;blog&#x2F;">博客</a>
+                
+                
+                <a  href="&#x2F;about&#x2F;">关于</a>
+                
+                
+            </nav>
+        </header>
+        <main id="main" tabindex="-1">
+            
+
+<article class="post">
+    <header>
+        <h1>[译]通过例子学子类型推理（十三）：条件流约束、存在多态和类型级计算</h1>
+    </header>
+
+    
+    <div class="article-info">
+        
+        <div class="article-date">2021-04-13</div>
+        
+        <div class="article-taxonomies">
+            
+                <ul class="article-tags">
+                    
+                    <li><a href="https://firecodelab.com/tags/translate/">#translate</a></li>
+                    
+                    <li><a href="https://firecodelab.com/tags/compiler/">#compiler</a></li>
+                    
+                    <li><a href="https://firecodelab.com/tags/type-inference/">#type inference</a></li>
+                    
+                </ul>
+            
+        </div>
+        
+        <div class="article-original">[<a href="https:&#x2F;&#x2F;blog.polybdenum.com&#x2F;2020&#x2F;10&#x2F;03&#x2F;subtype-inference-by-example-part-13-conditional-flow-types-and-type-level-computation.html" target="_blank">view original</a>]</div>
+        
+    </div>
+
+
+    <div class="content">
+        <p><a href="/blog/subtype-inference-by-example-part-12-flow-typing-and-mixed-comparison-operators">上周</a>，我们介绍了为 cubiml 添加一些更独特的功能，特别是介绍了<em>流类型</em>，一种在尚未有 case 类型(也就是 sum 类型)的语言中模拟 case 类型的方法。今天我们将另辟蹊径，提高原生 case 类型的精度(对上一篇文章中的模拟空 case 类型进行相应的修改，留给读者去练习，但步骤与下面的非常相似)。</p>
+<h2 id="tiao-jian-liu-yue-shu">条件流约束</h2>
+<p>回顾一下，case 类型是一种创建值的方式，可以在运行时代表几种可能性（可能有不同的类型）中的一种，以一种可以在运行时安全匹配的方式。</p>
+<p>例如，下面的代码演示了一个函数，它可以取几个形状中的一个并计算其面积。重要的是，这一切都在编译时进行了检查。如果你试图传递没有被处理的 case，或者传递被处理 case 的错误类型，你将在编译时得到一个类型错误。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#b48ead;">let </span><span style="color:#bf616a;">area </span><span style="color:#c0c5ce;">= fun arg -&gt;
+    </span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> arg </span><span style="color:#b48ead;">with
+        | </span><span style="color:#c0c5ce;">`Square </span><span style="color:#bf616a;">x </span><span style="color:#c0c5ce;">-&gt; x.len *. x.len
+        </span><span style="color:#b48ead;">| </span><span style="color:#c0c5ce;">`Rect </span><span style="color:#bf616a;">x </span><span style="color:#c0c5ce;">-&gt; x.height *. x.width;
+
+area `Square {len=</span><span style="color:#d08770;">4.</span><span style="color:#c0c5ce;">};
+area `Rect {height=</span><span style="color:#d08770;">4.</span><span style="color:#c0c5ce;">; width=</span><span style="color:#d08770;">2.5</span><span style="color:#c0c5ce;">};
+
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">area2 </span><span style="color:#c0c5ce;">= fun arg -&gt;
+    </span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> arg </span><span style="color:#b48ead;">with
+        | </span><span style="color:#c0c5ce;">`Circle </span><span style="color:#bf616a;">x </span><span style="color:#c0c5ce;">-&gt; x.radius *. x.radius *. </span><span style="color:#d08770;">3.1415926
+        </span><span style="color:#b48ead;">| </span><span style="color:#bf616a;">x </span><span style="color:#c0c5ce;">-&gt; area x;
+
+area2 `Square {len=</span><span style="color:#d08770;">4.</span><span style="color:#c0c5ce;">};
+area2 `Rect {height=</span><span style="color:#d08770;">4.</span><span style="color:#c0c5ce;">; width=</span><span style="color:#d08770;">2.5</span><span style="color:#c0c5ce;">};
+area2 `Circle {radius=</span><span style="color:#d08770;">1.2</span><span style="color:#c0c5ce;">}
+</span></code></pre>
+<p>匹配允许处理调用者从未实际传递的 case。在运行时，只有与匹配 case 相关的特定分支会被执行。然而，在编译时，匹配表达式被当作每个分支都有可能被采用。例如，考虑以下代码</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#b48ead;">let </span><span style="color:#bf616a;">increment </span><span style="color:#c0c5ce;">= fun x -&gt;
+    </span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> x </span><span style="color:#b48ead;">with
+        | </span><span style="color:#c0c5ce;">`Int </span><span style="color:#bf616a;">i </span><span style="color:#c0c5ce;">-&gt; i + </span><span style="color:#d08770;">1
+        </span><span style="color:#b48ead;">| </span><span style="color:#c0c5ce;">`Float </span><span style="color:#bf616a;">f </span><span style="color:#c0c5ce;">-&gt; f +. </span><span style="color:#d08770;">1.0</span><span style="color:#c0c5ce;">;
+
+(increment `Int </span><span style="color:#d08770;">7</span><span style="color:#c0c5ce;">) * </span><span style="color:#d08770;">-3
+</span></code></pre>
+<p>这将导致类型错误：</p>
+<pre style="background-color:#2b303b;">
+<code><span style="color:#c0c5ce;">TypeError: Value is required to be a integer here,
+        | `Float f -&gt; f +. 1.0;
+
+(increment `Int 7) * -3
+^~~~~~~~~~~~~~~~~~
+But that value may be a float originating here.
+    match x with
+        | `Int i -&gt; i + 1
+        | `Float f -&gt; f +. 1.0;
+                      ^~~~~~~~
+
+(increment `Int 7) * -3
+</span></code></pre>
+<p>在运行时，如果传递 <code>Int</code> case，增量函数将返回整型，如果传递 <code>Float</code> case，则返回浮点型。然而，类型检查器会把它当作每个分支总是被采用，从而推断出返回类型为 <code>int | float</code>。在本周的文章中，我们将看到如何解决这个问题。但首先要声明一下。</p>
+<h3 id="mian-ze-sheng-ming">免责声明</h3>
+<p>提高类型精度的主要障碍是技术上的 - 哪些功能可以用什么样的复杂度来实现？如果一个特性在技术上不可行，那么进一步讨论它就没有意义，所以这就是我们关注的问题。</p>
+<p>然而，仅仅因为你<em>可以</em>实现一个特性，并不意味着你一定<em>应该</em>实现。有时，一个不那么精确的类型系统实际上是一件好事。例如，设计一个完全跳过死代码检查的类型检查器是非常容易的。然而，类型检查无法到达的代码对于检测额外的错误还是很有用的。此外，使类型系统不那么精确有时会让程序员更容易在心理上建模和推理，使语言不那么混乱。</p>
+<p>为此，我们今天要实现的功能是一种折中。它仍然会对匹配表达式的每一个分支进行类型检查，甚至是无法到达的分支，但只有可能被采用的分支才会对表达式的结果类型做出贡献。</p>
+<h3 id="lei-xing-xi-tong-she-ji">类型系统设计</h3>
+<p>回想一下，类型检查器前端目前为匹配表达式的每个分支运行以下代码：</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#b48ead;">let </span><span style="color:#c0c5ce;">(wrapped_type, wrapped_bound) = engine.</span><span style="color:#96b5b4;">var</span><span style="color:#c0c5ce;">();
+case_type_pairs.</span><span style="color:#96b5b4;">push</span><span style="color:#c0c5ce;">((tag.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">(), wrapped_bound));
+
+</span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> rhs_type = bindings.</span><span style="color:#96b5b4;">in_child_scope</span><span style="color:#c0c5ce;">(|</span><span style="color:#bf616a;">bindings</span><span style="color:#c0c5ce;">| {
+    bindings.</span><span style="color:#96b5b4;">insert</span><span style="color:#c0c5ce;">(name.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">(), wrapped_type);
+    </span><span style="color:#96b5b4;">check_expr</span><span style="color:#c0c5ce;">(engine, bindings, rhs_expr)
+})?;
+engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(rhs_type, result_bound)?;
+</span></code></pre>
+<p>对于我们的目的来说，最重要的部分是最后一行，它增加了一个流约束，从 <code>rhs_type</code> （匹配臂右侧的类型）到<code> result_bound</code> （整个匹配表达式的结果类型）。我们不想立即添加这个流边，而是想将这些节点存储在类型检查器中，只有在该分支确定实际使用后，才惰性地添加这个边。</p>
+<p>首先，我们为代表延迟流约束的（值，用）对添加一个 typedef。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#b48ead;">pub type </span><span style="color:#c0c5ce;">LazyFlow = (Value, Use);
+</span></code></pre>
+<p>然后把它添加到 case 用类型头的每个分支和相应的构造函数中。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">UCase {
+    cases: HashMap&lt;String, (Use, LazyFlow)&gt;,
+    wildcard: Option&lt;(Use, LazyFlow)&gt;,
+},
+</span></code></pre><pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">     }
+-    </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">case_use</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">cases</span><span style="color:#c0c5ce;">: Vec&lt;(String, Use)&gt;, </span><span style="color:#bf616a;">wildcard</span><span style="color:#c0c5ce;">: Option&lt;Use&gt;, </span><span style="color:#bf616a;">span</span><span style="color:#c0c5ce;">: Span) -&gt; Use {
++    </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">case_use</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">cases</span><span style="color:#c0c5ce;">: Vec&lt;(String, (Use, LazyFlow))&gt;, </span><span style="color:#bf616a;">wildcard</span><span style="color:#c0c5ce;">: Option&lt;(Use, LazyFlow)&gt;, </span><span style="color:#bf616a;">span</span><span style="color:#c0c5ce;">: Span) -&gt; Use {
+         </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> cases = cases.</span><span style="color:#96b5b4;">into_iter</span><span style="color:#c0c5ce;">().</span><span style="color:#96b5b4;">collect</span><span style="color:#c0c5ce;">();
+</span></code></pre>
+<p>接下来，更新 <code>check_heads</code> 的实现。从类型系统上来说，这是最重要的部分，但它出奇的简单。我们要做的就是，每当检查 case 类型时，也会将对应分支的懒惰流约束添加到待处理的流约束列表中。（注意下面新的 <code>out.push(lazy_flow)</code> 行）。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#65737e;">// Check if the right case is handled
+</span><span style="color:#b48ead;">if let </span><span style="color:#c0c5ce;">Some((rhs2, lazy_flow)) = cases2.</span><span style="color:#96b5b4;">get</span><span style="color:#c0c5ce;">(name).</span><span style="color:#96b5b4;">copied</span><span style="color:#c0c5ce;">() {
+    out.</span><span style="color:#96b5b4;">push</span><span style="color:#c0c5ce;">((lhs2, rhs2));
+    out.</span><span style="color:#96b5b4;">push</span><span style="color:#c0c5ce;">(lazy_flow);
+    Ok(())
+} </span><span style="color:#b48ead;">else if let </span><span style="color:#c0c5ce;">Some((rhs2, lazy_flow)) = wildcard {
+    out.</span><span style="color:#96b5b4;">push</span><span style="color:#c0c5ce;">((Value(lhs_ind), rhs2));
+    out.</span><span style="color:#96b5b4;">push</span><span style="color:#c0c5ce;">(lazy_flow);
+    Ok(())
+} </span><span style="color:#b48ead;">else </span><span style="color:#c0c5ce;">{
+</span></code></pre>
+<p>最后，还要更新类型检查器前端的代码。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#b48ead;">let </span><span style="color:#c0c5ce;">(wrapped_type, wrapped_bound) = engine.</span><span style="color:#96b5b4;">var</span><span style="color:#c0c5ce;">();
+</span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> rhs_type = bindings.</span><span style="color:#96b5b4;">in_child_scope</span><span style="color:#c0c5ce;">(|</span><span style="color:#bf616a;">bindings</span><span style="color:#c0c5ce;">| {
+    bindings.</span><span style="color:#96b5b4;">insert</span><span style="color:#c0c5ce;">(name.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">(), wrapped_type);
+    </span><span style="color:#96b5b4;">check_expr</span><span style="color:#c0c5ce;">(engine, bindings, rhs_expr)
+})?;
+
+case_type_pairs.</span><span style="color:#96b5b4;">push</span><span style="color:#c0c5ce;">((tag.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">(), (wrapped_bound, (rhs_type, result_bound))));
+</span></code></pre>
+<p>之前我们有 <code>engine.flow(rhs_type, result_bound)</code>，现在只需将 <code>(rhs_type, result_bound)</code> 对添加到 <code>case_type_pairs</code> 中，而 <code>case_type_pairs</code> 又会被传递给之前定义的类型检查器核心构造函数。</p>
+<p>同样的，我们对处理通配符分支的代码（如果有的话）也做同样的事情。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#b48ead;">let </span><span style="color:#c0c5ce;">(wrapped_type, wrapped_bound) = engine.</span><span style="color:#96b5b4;">var</span><span style="color:#c0c5ce;">();
+</span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> rhs_type = bindings.</span><span style="color:#96b5b4;">in_child_scope</span><span style="color:#c0c5ce;">(|</span><span style="color:#bf616a;">bindings</span><span style="color:#c0c5ce;">| {
+    bindings.</span><span style="color:#96b5b4;">insert</span><span style="color:#c0c5ce;">(name.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">(), wrapped_type);
+    </span><span style="color:#96b5b4;">check_expr</span><span style="color:#c0c5ce;">(engine, bindings, rhs_expr)
+})?;
+
+wildcard_type = Some((wrapped_bound, (rhs_type, result_bound)));
+</span></code></pre>
+<p>就是这样! 上面的代码示例现在已经通过了类型检查器。不过，设计上还是有一些细微的地方需要注意。</p>
+<h3 id="duo-tai-he-tiao-jian-liu">多态和条件流</h3>
+<p>在运行时，任何给定的匹配表达式的计算都只会导致一个分支被计算（并且该分支的值被返回）。然而，我们的代码将匹配臂的类型添加到匹配表达式的结果类型中，如果该分支可以从程序中的任何地方<em>任意</em>调用。</p>
+<p>这意味着，如果同时使用 <code>Int</code> 和 <code>Float</code> 两种 case 调用 <code>increment</code> ，结果类型将再次变成 <code>int | float</code> ，我们将再次得到一个类型错误。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#b48ead;">let </span><span style="color:#bf616a;">id </span><span style="color:#c0c5ce;">= fun x -&gt; x;
+</span><span style="color:#65737e;">(* Use id to force increment to be monomorphic *)
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">increment </span><span style="color:#c0c5ce;">= id (</span><span style="color:#b48ead;">fun </span><span style="color:#bf616a;">x </span><span style="color:#c0c5ce;">-&gt;
+    </span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> x </span><span style="color:#b48ead;">with
+        | </span><span style="color:#c0c5ce;">`Int </span><span style="color:#bf616a;">i </span><span style="color:#c0c5ce;">-&gt; i + </span><span style="color:#d08770;">1
+        </span><span style="color:#b48ead;">| </span><span style="color:#c0c5ce;">`Float </span><span style="color:#bf616a;">f </span><span style="color:#c0c5ce;">-&gt; f +. </span><span style="color:#d08770;">1.0</span><span style="color:#c0c5ce;">);
+
+(increment `Int </span><span style="color:#d08770;">7</span><span style="color:#c0c5ce;">) * </span><span style="color:#d08770;">-3</span><span style="color:#c0c5ce;">;
+(increment `Float </span><span style="color:#d08770;">7.0</span><span style="color:#c0c5ce;">) *. </span><span style="color:#d08770;">-3.0
+</span></code></pre><pre style="background-color:#2b303b;">
+<code><span style="color:#c0c5ce;">TypeError: Value is required to be a integer here,
+        | `Float f -&gt; f +. 1.0);
+
+(increment `Int 7) * -3;
+^~~~~~~~~~~~~~~~~~
+(increment `Float 7.0) *. -3.0
+But that value may be a float originating here.
+    match x with
+        | `Int i -&gt; i + 1
+        | `Float f -&gt; f +. 1.0);
+                      ^~~~~~~~
+
+(increment `Int 7) * -3;
+</span></code></pre>
+<p>这可能会让这个功能显得很无用。反正程序员可以直接删除死代码，那么忽略死代码有什么用呢？事实上，这个功能<em>对于单态代码来说</em>基本上是无用的。然而，当与 let 多态结合后，故事就完全变了。</p>
+<p>在前面的例子中，我们为了强制单态化，把 <code>increment</code> 的定义包装在了对 <code>id</code> 的调用中（回忆一下，值限制对函数调用并不友好）。如果我们修改上面的例子，去掉这个调用，让 <code>increment</code> 成为多态的，就不会再产生类型错误。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#b48ead;">let </span><span style="color:#bf616a;">increment </span><span style="color:#c0c5ce;">= fun x -&gt;
+    </span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> x </span><span style="color:#b48ead;">with
+        | </span><span style="color:#c0c5ce;">`Int </span><span style="color:#bf616a;">i </span><span style="color:#c0c5ce;">-&gt; i + </span><span style="color:#d08770;">1
+        </span><span style="color:#b48ead;">| </span><span style="color:#c0c5ce;">`Float </span><span style="color:#bf616a;">f </span><span style="color:#c0c5ce;">-&gt; f +. </span><span style="color:#d08770;">1.0</span><span style="color:#c0c5ce;">;
+
+(increment `Int </span><span style="color:#d08770;">7</span><span style="color:#c0c5ce;">) * </span><span style="color:#d08770;">-3</span><span style="color:#c0c5ce;">;
+(increment `Float </span><span style="color:#d08770;">7.0</span><span style="color:#c0c5ce;">) *. </span><span style="color:#d08770;">-3.0
+</span></code></pre>
+<p>这是因为当 <code>increment</code> 是多态的时候，每次使用都会有一个新的、独立的类型副本被标记，条件流只触发调用者<em>到那个特定副本</em>的匹配臂。在单态的情况下，一个匹配臂只有在所有调用者都未使用的情况下才无用，在这种情况下，代码可以简单地被删除。在多态情况下，一个匹配臂可能在某些调用点未被使用，而在其他地方仍被其他调用者使用。它本质上将匹配表达式类型变成了“只为你使用的付费”，并以每个调用点为基础。</p>
+<h3 id="cun-zai-bian-liang">存在变量</h3>
+<p>这种类型特征有时被称为存在多态，是行多态的近亲。我们可以将上面的 <code>increment</code> 函数的类型方案描述为<code>forall Pi, Pf =&gt; (`Int int if Pi | `Float float if Pf) -&gt; (int if Pi | float if Pf)</code>，其中 <code>Pi</code> 和 <code>Pf</code> 不是通常的单态范围之上的类型变量 <code>T </code>和 <code>U</code>，而是表示 case 存在或确实的的<em>存在变量</em>。</p>
+<h2 id="lei-xing-ji-ji-suan">类型级计算</h2>
+<p>类型级计算并不是我们将在类型系统中实现的具体功能，而是很酷但不实用的技巧，你可以使用已经实现的功能，特别是使用条件流约束。</p>
+<p>关键的见解是，条件流允许我们在类型检查过程中<em>有条件地</em>对类型执行操作。当然，条件并不是类型级计算所必需的 - 你甚至可以只用 lambda 计算来实现对类型的任意计算。然而，使用条件的能力使它变得更加容易和自然。</p>
+<p>如果没有条件，你必须把所有的东西都编码成无分支代码，<a href="https://pharr.org/matt/blog/2018/04/21/ispc-volta-c-and-spmd.html#making-spmd-on-simd-happen">SPMD-style</a>。这不仅做起来很麻烦，而且使内存访问的效率非常低。为了在无分支代码中执行随机内存访问，你必须在每次访问时扫描整个内存空间，并且只为你真正需要的一个位置保留结果。而条件流则可以让你以更自然、更高效的方式编写类型级计算。</p>
+<p>从上一篇关于 let 多态性能的文章中回想一下，let 多态可以让你简明地将指数数量的调用组合成一个不同类型的单独函数。因此，我们将编写一个执行单步工作的函数，“程序状态”由函数的输入和输出类型表示。然后，我们使用多态来很多次调用该函数，基本上是以期望的步数“运行”程序。</p>
+<h3 id="bian-yi-shi-fei-bo-na-qi">编译时斐波那契</h3>
+<p>为了便于演示，我们将在编译时实现一个计算斐波那契数的函数。斐波那契数很容易计算。通常情况下，你会使用类似下面的代码：</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#b48ead;">let rec </span><span style="color:#8fa1b3;">fib_sub </span><span style="color:#c0c5ce;">= </span><span style="color:#b48ead;">fun </span><span style="color:#bf616a;">args </span><span style="color:#c0c5ce;">-&gt;
+    </span><span style="color:#b48ead;">if</span><span style="color:#c0c5ce;"> args.n &lt;= </span><span style="color:#d08770;">0 </span><span style="color:#b48ead;">then
+</span><span style="color:#c0c5ce;">        args.a
+    </span><span style="color:#b48ead;">else
+</span><span style="color:#c0c5ce;">        fib_sub {n=args.n - </span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">; a=args.a + args.b; b=args.a};
+
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">fib </span><span style="color:#c0c5ce;">= </span><span style="color:#b48ead;">fun </span><span style="color:#bf616a;">n </span><span style="color:#c0c5ce;">-&gt; fib_sub {n=n; a=</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">; b=</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">};
+fib </span><span style="color:#d08770;">12
+</span></code></pre>
+<p>然而，我们希望在编译时使用类型进行计算，这就需要一种更不寻常的编码风格。特别是，不能使用循环或递归。相反，我们必须执行单步计算，然后“返回”状态。此外，我们不能使用常规整数，所以必须创建自己的整数。</p>
+<h3 id="lei-xing-ji-zheng-shu">类型级整数</h3>
+<p>为了在类型层面上进行数学运算，我们需要一种表示整数的方法，其中每个整数都是一个独立的类型。传统上，这是用一元编码完成的，但为了提高效率，我们将使用二进制代替。</p>
+<p>每个数字都表示为一串二进制数字，其中每个数字都使用一个 case 类型变体来表示。为了使它们易于使用，我们将使用小端数字（在代码中写入时，最低有效数字出现在左边），并有一个特殊的标签 <code>End</code> 来标记数字的结束。下面是一些编码的例子：</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#b48ead;">let </span><span style="color:#bf616a;">end </span><span style="color:#c0c5ce;">= `End {};
+
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">one </span><span style="color:#c0c5ce;">= `</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;"> end;
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">two </span><span style="color:#c0c5ce;">= `</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">`</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;"> end;
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">seven </span><span style="color:#c0c5ce;">= `</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">`</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">`</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;"> end;
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">twelve </span><span style="color:#c0c5ce;">= `</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">`</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">`</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">`</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;"> end;
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">million_and_eighty_seven </span><span style="color:#c0c5ce;">= `</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">`</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">`</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">`</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">`</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">`</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">`</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">`</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">`</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">`</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">`</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">`</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">`</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">`</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">`</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">`</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">`</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">`</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">`</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">`</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;"> end;
+</span></code></pre>
+<p>然后，需要编写辅助函数来逐位递增、递减和相加这些编码数字。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#b48ead;">let </span><span style="color:#bf616a;">end </span><span style="color:#c0c5ce;">= `End {};
+
+</span><span style="color:#65737e;">(* Decrement x by 1. If x is already zero, return `Error,
+    else, return `Ok (x - 1) *)
+</span><span style="color:#b48ead;">let rec </span><span style="color:#8fa1b3;">decrement </span><span style="color:#c0c5ce;">= </span><span style="color:#b48ead;">fun </span><span style="color:#bf616a;">x </span><span style="color:#c0c5ce;">-&gt;
+    </span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> x </span><span style="color:#b48ead;">with
+    | </span><span style="color:#c0c5ce;">`End </span><span style="color:#d08770;">_ </span><span style="color:#c0c5ce;">-&gt; `Error {}
+    </span><span style="color:#b48ead;">|</span><span style="color:#c0c5ce;"> `</span><span style="color:#d08770;">1 </span><span style="color:#bf616a;">xs </span><span style="color:#c0c5ce;">-&gt; `Ok `</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;"> xs
+    </span><span style="color:#b48ead;">|</span><span style="color:#c0c5ce;"> `</span><span style="color:#d08770;">0 </span><span style="color:#bf616a;">xs </span><span style="color:#c0c5ce;">-&gt; (
+        </span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> decrement xs </span><span style="color:#b48ead;">with
+        | </span><span style="color:#c0c5ce;">`Ok </span><span style="color:#bf616a;">xs_dec </span><span style="color:#c0c5ce;">-&gt; `Ok `</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;"> xs_dec
+        </span><span style="color:#b48ead;">| </span><span style="color:#d08770;">_ </span><span style="color:#c0c5ce;">-&gt; _
+    );
+
+</span><span style="color:#65737e;">(* Add args.x + 1 *)
+</span><span style="color:#b48ead;">let rec </span><span style="color:#8fa1b3;">increment </span><span style="color:#c0c5ce;">= </span><span style="color:#b48ead;">fun </span><span style="color:#bf616a;">x </span><span style="color:#c0c5ce;">-&gt;
+    </span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> x </span><span style="color:#b48ead;">with
+    | </span><span style="color:#c0c5ce;">`End </span><span style="color:#d08770;">_ </span><span style="color:#c0c5ce;">-&gt; `</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;"> end
+    </span><span style="color:#b48ead;">|</span><span style="color:#c0c5ce;"> `</span><span style="color:#d08770;">0 </span><span style="color:#bf616a;">xs </span><span style="color:#c0c5ce;">-&gt; `</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;"> xs
+    </span><span style="color:#b48ead;">|</span><span style="color:#c0c5ce;"> `</span><span style="color:#d08770;">1 </span><span style="color:#bf616a;">xs </span><span style="color:#c0c5ce;">-&gt; `</span><span style="color:#d08770;">0 </span><span style="color:#c0c5ce;">(increment xs);
+
+</span><span style="color:#65737e;">(* Add args.x + args.y *)
+</span><span style="color:#b48ead;">let rec </span><span style="color:#8fa1b3;">add </span><span style="color:#c0c5ce;">= </span><span style="color:#b48ead;">fun </span><span style="color:#bf616a;">args </span><span style="color:#c0c5ce;">-&gt;
+    </span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> args.y </span><span style="color:#b48ead;">with
+    | </span><span style="color:#c0c5ce;">`End </span><span style="color:#d08770;">_ </span><span style="color:#c0c5ce;">-&gt; args.x
+    </span><span style="color:#b48ead;">|</span><span style="color:#c0c5ce;"> `</span><span style="color:#d08770;">0 </span><span style="color:#bf616a;">ys </span><span style="color:#c0c5ce;">-&gt; add_shifted {x=args.x; ys=ys}
+    </span><span style="color:#b48ead;">|</span><span style="color:#c0c5ce;"> `</span><span style="color:#d08770;">1 </span><span style="color:#bf616a;">ys </span><span style="color:#c0c5ce;">-&gt; add_shifted {x=increment args.x; ys=ys}
+</span><span style="color:#b48ead;">and </span><span style="color:#bf616a;">add_shifted </span><span style="color:#c0c5ce;">= </span><span style="color:#b48ead;">fun </span><span style="color:#bf616a;">args </span><span style="color:#c0c5ce;">-&gt;
+    </span><span style="color:#65737e;">(* Add args.x + (args.ys &lt;&lt; 1) *)
+    </span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> args.x </span><span style="color:#b48ead;">with
+    | </span><span style="color:#c0c5ce;">`End </span><span style="color:#d08770;">_ </span><span style="color:#c0c5ce;">-&gt; `</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;"> args.ys
+    </span><span style="color:#b48ead;">|</span><span style="color:#c0c5ce;"> `</span><span style="color:#d08770;">0 </span><span style="color:#bf616a;">xs </span><span style="color:#c0c5ce;">-&gt; `</span><span style="color:#d08770;">0 </span><span style="color:#c0c5ce;">(add {x=xs; y=args.ys})
+    </span><span style="color:#b48ead;">|</span><span style="color:#c0c5ce;"> `</span><span style="color:#d08770;">1 </span><span style="color:#bf616a;">xs </span><span style="color:#c0c5ce;">-&gt; `</span><span style="color:#d08770;">1 </span><span style="color:#c0c5ce;">(add {x=xs; y=args.ys})
+    ;
+
+</span><span style="color:#b48ead;">let rec </span><span style="color:#8fa1b3;">fib_sub </span><span style="color:#c0c5ce;">= </span><span style="color:#b48ead;">fun </span><span style="color:#bf616a;">args </span><span style="color:#c0c5ce;">-&gt;
+    </span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> decrement args.n </span><span style="color:#b48ead;">with
+    | </span><span style="color:#c0c5ce;">`Error </span><span style="color:#d08770;">_ </span><span style="color:#c0c5ce;">-&gt; args.a
+    </span><span style="color:#b48ead;">| </span><span style="color:#c0c5ce;">`Ok </span><span style="color:#bf616a;">n </span><span style="color:#c0c5ce;">-&gt;
+        fib_sub {n=n; a=add {x=args.a; y=args.b}; b=args.a};
+
+
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">fib </span><span style="color:#c0c5ce;">= </span><span style="color:#b48ead;">fun </span><span style="color:#bf616a;">n </span><span style="color:#c0c5ce;">-&gt; fib_sub {n=n; a=`</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;"> end; b=`</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;"> end};
+fib `</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">`</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">`</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">`</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;"> end
+</span></code></pre><h3 id="mo-ni-di-gui">模拟递归</h3>
+<p>由于使用了递归，上述代码在编译时仍然无法运行。为了进行类型级别的计算，需要“解开”所有的递归并模拟调用栈。每个帮助函数都会接收一个包含字段 <code>val</code>、<code>stack</code> 和其他可选字段的栈帧。<code>val</code> 被设置为前一个函数调用所“返回”的任意内容。<code>stack</code> 是栈上的下一帧。帧中的其他字段只是在帧最初创建时保存的内容。</p>
+<p>我们的函数不直接调用函数，而是将要调用的函数名推送到栈上，然后返回新的栈。然后有一个 <code>tick</code> 函数，只是从栈中弹出并调用相应的函数。</p>
+<p>另外，需要在每个函数调用函数的每个点，将它拆成独立的函数，这样就有了“返回”的地方。例如，可以将 <code>increment</code> 函数转换为这种样式，如下所示，添加 <code>increment2</code> 函数来处理推送最后的 <code> `0</code> 到递归的“返回”的值上。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#65737e;">(* Add frame.val + 1 *)
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">increment </span><span style="color:#c0c5ce;">= fun frame -&gt;
+    </span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> frame.val </span><span style="color:#b48ead;">with
+    | </span><span style="color:#c0c5ce;">`End </span><span style="color:#d08770;">_ </span><span style="color:#c0c5ce;">-&gt; {frame | val=`</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;"> end}
+    </span><span style="color:#b48ead;">|</span><span style="color:#c0c5ce;"> `</span><span style="color:#d08770;">0 </span><span style="color:#bf616a;">xs </span><span style="color:#c0c5ce;">-&gt; {frame | val=`</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;"> xs}
+    </span><span style="color:#b48ead;">|</span><span style="color:#c0c5ce;"> `</span><span style="color:#d08770;">1 </span><span style="color:#bf616a;">xs </span><span style="color:#c0c5ce;">-&gt; (
+        </span><span style="color:#65737e;">(* call increment2 (increment xs) *)
+        (* where increment2 = fun x -&gt; `0 x *)
+        </span><span style="color:#c0c5ce;">{val=xs; stack=`Increment {stack=`Increment2 {stack=frame.stack}}}
+    );
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">increment2 </span><span style="color:#c0c5ce;">= fun frame -&gt; {frame | val=`</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;"> frame.val};
+</span></code></pre>
+<p>然后可以调用增量函数，如下所示</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#b48ead;">let </span><span style="color:#bf616a;">tick </span><span style="color:#c0c5ce;">= fun state -&gt;
+    </span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> state.stack </span><span style="color:#b48ead;">with
+    | </span><span style="color:#c0c5ce;">`Increment </span><span style="color:#bf616a;">frame </span><span style="color:#c0c5ce;">-&gt; increment {frame | val=state.val}
+    </span><span style="color:#b48ead;">| </span><span style="color:#c0c5ce;">`Increment2 </span><span style="color:#bf616a;">frame </span><span style="color:#c0c5ce;">-&gt; increment2 {frame | val=state.val}
+    </span><span style="color:#65737e;">(* if the computation is done, just return the state unchanged *)
+    </span><span style="color:#b48ead;">| </span><span style="color:#c0c5ce;">`Done </span><span style="color:#d08770;">_ </span><span style="color:#c0c5ce;">-&gt; state
+    ;
+
+</span><span style="color:#65737e;">(* set up initial state to call increment `1`1`0`1 end *)
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">state </span><span style="color:#c0c5ce;">= {val=`</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">`</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">`</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">`</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;"> end; stack=`Increment {stack=`Done {}}};
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">state </span><span style="color:#c0c5ce;">= tick state;
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">state </span><span style="color:#c0c5ce;">= tick state;
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">state </span><span style="color:#c0c5ce;">= tick state;
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">state </span><span style="color:#c0c5ce;">= tick state
+</span></code></pre>
+<p>重要的是，增量函数是<em>在编译类型</em>时计算的，所以可以在编译时对结果进行断言。例如，下面的代码断言结果是 <code> `0`0`1`1 end</code>。如果是其他的东西，编译时就会得到一个错误。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> state.stack </span><span style="color:#b48ead;">with | </span><span style="color:#c0c5ce;">`Done </span><span style="color:#d08770;">_ </span><span style="color:#c0c5ce;">-&gt; _;
+</span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> state.val </span><span style="color:#b48ead;">with |</span><span style="color:#c0c5ce;"> `</span><span style="color:#d08770;">0 </span><span style="color:#bf616a;">x </span><span style="color:#c0c5ce;">-&gt;
+    (</span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> x </span><span style="color:#b48ead;">with |</span><span style="color:#c0c5ce;"> `</span><span style="color:#d08770;">0 </span><span style="color:#bf616a;">x </span><span style="color:#c0c5ce;">-&gt;
+    (</span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> x </span><span style="color:#b48ead;">with |</span><span style="color:#c0c5ce;"> `</span><span style="color:#d08770;">1 </span><span style="color:#bf616a;">x </span><span style="color:#c0c5ce;">-&gt;
+    (</span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> x </span><span style="color:#b48ead;">with |</span><span style="color:#c0c5ce;"> `</span><span style="color:#d08770;">1 </span><span style="color:#bf616a;">x </span><span style="color:#c0c5ce;">-&gt;
+    (</span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> x </span><span style="color:#b48ead;">with | </span><span style="color:#c0c5ce;">`End </span><span style="color:#d08770;">_ </span><span style="color:#c0c5ce;">-&gt; _))))
+</span></code></pre>
+<p>递增数字并不是那么令人兴奋，所以让我们继续转换剩下的斐波那契计算代码。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#b48ead;">let </span><span style="color:#bf616a;">end </span><span style="color:#c0c5ce;">= `End {};
+
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">push0 </span><span style="color:#c0c5ce;">= fun frame -&gt; {frame | val=`</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;"> frame.val};
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">push1 </span><span style="color:#c0c5ce;">= fun frame -&gt; {frame | val=`</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;"> frame.val};
+
+</span><span style="color:#65737e;">(* Add frame.val + 1 *)
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">increment </span><span style="color:#c0c5ce;">= fun frame -&gt;
+    </span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> frame.val </span><span style="color:#b48ead;">with
+    | </span><span style="color:#c0c5ce;">`End </span><span style="color:#d08770;">_ </span><span style="color:#c0c5ce;">-&gt; {frame | val=`</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;"> end}
+    </span><span style="color:#b48ead;">|</span><span style="color:#c0c5ce;"> `</span><span style="color:#d08770;">0 </span><span style="color:#bf616a;">xs </span><span style="color:#c0c5ce;">-&gt; {frame | val=`</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;"> xs}
+    </span><span style="color:#b48ead;">|</span><span style="color:#c0c5ce;"> `</span><span style="color:#d08770;">1 </span><span style="color:#bf616a;">xs </span><span style="color:#c0c5ce;">-&gt; (
+        </span><span style="color:#65737e;">(* call push0 (increment xs) *)
+        (* where push0 = fun x -&gt; `0 x *)
+        </span><span style="color:#c0c5ce;">{val=xs; stack=`Increment {stack=`Push0 {stack=frame.stack}}}
+    );
+
+</span><span style="color:#65737e;">(* Decrement frame.val, with initial bit of return value representing status
+    if frame.val is zero, returns `0 end to represent an error state
+    otherwise, returns `1 (n-1). *)
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">decrement </span><span style="color:#c0c5ce;">= fun frame -&gt;
+    </span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> frame.val </span><span style="color:#b48ead;">with
+    | </span><span style="color:#c0c5ce;">`End </span><span style="color:#d08770;">_ </span><span style="color:#c0c5ce;">-&gt; {frame | val=`</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;"> end}
+    </span><span style="color:#b48ead;">|</span><span style="color:#c0c5ce;"> `</span><span style="color:#d08770;">1 </span><span style="color:#bf616a;">xs </span><span style="color:#c0c5ce;">-&gt; {frame | val=`</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">`</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;"> xs}
+    </span><span style="color:#b48ead;">|</span><span style="color:#c0c5ce;"> `</span><span style="color:#d08770;">0 </span><span style="color:#bf616a;">xs </span><span style="color:#c0c5ce;">-&gt; (
+        </span><span style="color:#65737e;">(* call decrement2 (decrement xs) *)
+        </span><span style="color:#c0c5ce;">{val=xs; stack=`Decrement {stack=`Decrement2 {stack=frame.stack}}}
+    );
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">decrement2 </span><span style="color:#c0c5ce;">= fun frame -&gt;
+    </span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> frame.val </span><span style="color:#b48ead;">with
+    |</span><span style="color:#c0c5ce;"> `</span><span style="color:#d08770;">1 </span><span style="color:#bf616a;">xs_dec </span><span style="color:#c0c5ce;">-&gt; {frame | val=`</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">`</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;"> xs_dec}
+    </span><span style="color:#65737e;">(* when val represents an error, return it unchanged *)
+    </span><span style="color:#b48ead;">|</span><span style="color:#c0c5ce;"> `</span><span style="color:#d08770;">0 _ </span><span style="color:#c0c5ce;">-&gt; {frame | val=`</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;"> end}
+    </span><span style="color:#65737e;">(* this case isn&#39;t actually reachable, but is needed for type checking *)
+    </span><span style="color:#b48ead;">| </span><span style="color:#c0c5ce;">`End </span><span style="color:#d08770;">_ </span><span style="color:#c0c5ce;">-&gt; {frame | val=`</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;"> end}
+    ;
+
+</span><span style="color:#65737e;">(* add frame.val + (frame.ys &lt;&lt; 1) *)
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">add_shifted </span><span style="color:#c0c5ce;">= fun frame -&gt;
+    </span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> frame.val </span><span style="color:#b48ead;">with
+    </span><span style="color:#65737e;">(* this case isn&#39;t actually reachable, but is needed for type checking *)
+    </span><span style="color:#b48ead;">| </span><span style="color:#c0c5ce;">`End </span><span style="color:#d08770;">_ </span><span style="color:#c0c5ce;">-&gt; {val=`</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;"> frame.ys; stack=frame.stack}
+    </span><span style="color:#b48ead;">|</span><span style="color:#c0c5ce;"> `</span><span style="color:#d08770;">0 </span><span style="color:#bf616a;">xs </span><span style="color:#c0c5ce;">-&gt; (
+        </span><span style="color:#65737e;">(* call push0 (add {val=xs; y=ys}) *)
+        </span><span style="color:#c0c5ce;">{val=xs; stack=`Add {y=frame.ys; stack=`Push0 {stack=frame.stack}}}
+    )
+    </span><span style="color:#b48ead;">|</span><span style="color:#c0c5ce;"> `</span><span style="color:#d08770;">1 </span><span style="color:#bf616a;">xs </span><span style="color:#c0c5ce;">-&gt; (
+        </span><span style="color:#65737e;">(* call push1 (add {val=xs; y=ys}) *)
+        </span><span style="color:#c0c5ce;">{val=xs; stack=`Add {y=frame.ys; stack=`Push1 {stack=frame.stack}}}
+    );
+
+</span><span style="color:#65737e;">(* add frame.val + frame.y *)
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">add </span><span style="color:#c0c5ce;">= fun frame -&gt;
+    </span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> frame.y </span><span style="color:#b48ead;">with
+    </span><span style="color:#65737e;">(* when y=0, return frame.val unchanged *)
+    </span><span style="color:#b48ead;">| </span><span style="color:#c0c5ce;">`End </span><span style="color:#d08770;">_ </span><span style="color:#c0c5ce;">-&gt; frame
+    </span><span style="color:#b48ead;">|</span><span style="color:#c0c5ce;"> `</span><span style="color:#d08770;">0 </span><span style="color:#bf616a;">ys </span><span style="color:#c0c5ce;">-&gt; add_shifted {val=frame.val; ys=ys; stack=frame.stack}
+    </span><span style="color:#b48ead;">|</span><span style="color:#c0c5ce;"> `</span><span style="color:#d08770;">1 </span><span style="color:#bf616a;">ys </span><span style="color:#c0c5ce;">-&gt;  (
+        </span><span style="color:#65737e;">(* call add_shifted {val=increment frame.val; ys=ys} *)
+</span><span style="color:#c0c5ce;">        increment {val=frame.val; stack=`AddShifted {ys=ys; stack=frame.stack}}
+    );
+
+</span><span style="color:#65737e;">(* computes an iteration of the fibonacci calculations:
+    fib_sub (n, a, b) -&gt; (n-1, a+b, a) where a=frame.val*)
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">fib_sub </span><span style="color:#c0c5ce;">= fun frame -&gt; decrement {val=frame.n; stack=`FibSub2 {a=frame.val; b=frame.b; stack=frame.stack}};
+
+</span><span style="color:#65737e;">(* note that here, val is the &quot;n&quot; value rather than the &quot;a&quot; value *)
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">fib_sub2 </span><span style="color:#c0c5ce;">= fun frame -&gt;
+    </span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> frame.val </span><span style="color:#b48ead;">with
+    </span><span style="color:#65737e;">(* this case isn&#39;t actually reachable, but is needed for type checking *)
+    </span><span style="color:#b48ead;">| </span><span style="color:#c0c5ce;">`End </span><span style="color:#d08770;">_ </span><span style="color:#c0c5ce;">-&gt; {val=frame.a; stack=frame.stack}
+    </span><span style="color:#b48ead;">|</span><span style="color:#c0c5ce;"> `</span><span style="color:#d08770;">0 _ </span><span style="color:#c0c5ce;">-&gt; {val=frame.a; stack=frame.stack}
+    </span><span style="color:#b48ead;">|</span><span style="color:#c0c5ce;"> `</span><span style="color:#d08770;">1 </span><span style="color:#bf616a;">n </span><span style="color:#c0c5ce;">-&gt; {val=frame.a; stack=`Add {y=frame.b; stack=`FibSub {n=n; b=frame.a; stack=frame.stack}}};
+
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">tick </span><span style="color:#c0c5ce;">= fun state -&gt;
+    </span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> state.stack </span><span style="color:#b48ead;">with
+    | </span><span style="color:#c0c5ce;">`Push0 </span><span style="color:#bf616a;">frame </span><span style="color:#c0c5ce;">-&gt; push0 {frame | val=state.val}
+    </span><span style="color:#b48ead;">| </span><span style="color:#c0c5ce;">`Push1 </span><span style="color:#bf616a;">frame </span><span style="color:#c0c5ce;">-&gt; push1 {frame | val=state.val}
+    </span><span style="color:#b48ead;">| </span><span style="color:#c0c5ce;">`Increment </span><span style="color:#bf616a;">frame </span><span style="color:#c0c5ce;">-&gt; increment {frame | val=state.val}
+    </span><span style="color:#b48ead;">| </span><span style="color:#c0c5ce;">`Decrement </span><span style="color:#bf616a;">frame </span><span style="color:#c0c5ce;">-&gt; decrement {frame | val=state.val}
+    </span><span style="color:#b48ead;">| </span><span style="color:#c0c5ce;">`Decrement2 </span><span style="color:#bf616a;">frame </span><span style="color:#c0c5ce;">-&gt; decrement2 {frame | val=state.val}
+    </span><span style="color:#b48ead;">| </span><span style="color:#c0c5ce;">`AddShifted </span><span style="color:#bf616a;">frame </span><span style="color:#c0c5ce;">-&gt; add_shifted {frame | val=state.val}
+    </span><span style="color:#b48ead;">| </span><span style="color:#c0c5ce;">`Add </span><span style="color:#bf616a;">frame </span><span style="color:#c0c5ce;">-&gt; add {frame | val=state.val}
+    </span><span style="color:#b48ead;">| </span><span style="color:#c0c5ce;">`FibSub </span><span style="color:#bf616a;">frame </span><span style="color:#c0c5ce;">-&gt; fib_sub {frame | val=state.val}
+    </span><span style="color:#b48ead;">| </span><span style="color:#c0c5ce;">`FibSub2 </span><span style="color:#bf616a;">frame </span><span style="color:#c0c5ce;">-&gt; fib_sub2 {frame | val=state.val}
+    </span><span style="color:#65737e;">(* if the computation is done, just return the state unchanged *)
+    </span><span style="color:#b48ead;">| </span><span style="color:#c0c5ce;">`Done </span><span style="color:#d08770;">_ </span><span style="color:#c0c5ce;">-&gt; state
+    ;
+</span></code></pre>
+<p>现在可以通过运行程序 256 次来测试它，这足以计算出前 12 个斐波那契数。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#b48ead;">let </span><span style="color:#bf616a;">tick2 </span><span style="color:#c0c5ce;">= fun state -&gt; tick (tick state);
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">tick3 </span><span style="color:#c0c5ce;">= fun state -&gt; tick2 (tick2 state);
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">tick4 </span><span style="color:#c0c5ce;">= fun state -&gt; tick3 (tick3 state);
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">tick5 </span><span style="color:#c0c5ce;">= fun state -&gt; tick4 (tick4 state);
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">tick6 </span><span style="color:#c0c5ce;">= fun state -&gt; tick5 (tick5 state);
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">tick7 </span><span style="color:#c0c5ce;">= fun state -&gt; tick6 (tick6 state);
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">tick8 </span><span style="color:#c0c5ce;">= fun state -&gt; tick7 (tick7 state);
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">tick9 </span><span style="color:#c0c5ce;">= fun state -&gt; tick8 (tick8 state);
+
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">fib9 </span><span style="color:#c0c5ce;">= fun n -&gt;
+    </span><span style="color:#65737e;">(* set up the initial state to call fib_sub *)
+</span><span style="color:#c0c5ce;">    tick9 {val=`</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;"> end; stack=`FibSub {n=n; b=`</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;"> end; stack=`Done {}}};
+</span></code></pre>
+<p>第 12 个斐波那契数是 377，即二进制的 <code> `1`0`0`1`1`1`1`0`1 end</code>。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#65737e;">(* compute the 12th fibonacci number *)
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">state </span><span style="color:#c0c5ce;">= fib9 `</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">`</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">`</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">`</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;"> end;
+</span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> state.stack </span><span style="color:#b48ead;">with | </span><span style="color:#c0c5ce;">`Done </span><span style="color:#d08770;">_ </span><span style="color:#c0c5ce;">-&gt; _;
+</span><span style="color:#65737e;">(* the 12th fibonacci number is 377 = 0b101111001 *)
+</span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> state.val </span><span style="color:#b48ead;">with |</span><span style="color:#c0c5ce;"> `</span><span style="color:#d08770;">1 </span><span style="color:#bf616a;">x </span><span style="color:#c0c5ce;">-&gt;
+    (</span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> x </span><span style="color:#b48ead;">with |</span><span style="color:#c0c5ce;"> `</span><span style="color:#d08770;">0 </span><span style="color:#bf616a;">x </span><span style="color:#c0c5ce;">-&gt;
+    (</span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> x </span><span style="color:#b48ead;">with |</span><span style="color:#c0c5ce;"> `</span><span style="color:#d08770;">0 </span><span style="color:#bf616a;">x </span><span style="color:#c0c5ce;">-&gt;
+    (</span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> x </span><span style="color:#b48ead;">with |</span><span style="color:#c0c5ce;"> `</span><span style="color:#d08770;">1 </span><span style="color:#bf616a;">x </span><span style="color:#c0c5ce;">-&gt;
+    (</span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> x </span><span style="color:#b48ead;">with |</span><span style="color:#c0c5ce;"> `</span><span style="color:#d08770;">1 </span><span style="color:#bf616a;">x </span><span style="color:#c0c5ce;">-&gt;
+    (</span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> x </span><span style="color:#b48ead;">with |</span><span style="color:#c0c5ce;"> `</span><span style="color:#d08770;">1 </span><span style="color:#bf616a;">x </span><span style="color:#c0c5ce;">-&gt;
+    (</span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> x </span><span style="color:#b48ead;">with |</span><span style="color:#c0c5ce;"> `</span><span style="color:#d08770;">1 </span><span style="color:#bf616a;">x </span><span style="color:#c0c5ce;">-&gt;
+    (</span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> x </span><span style="color:#b48ead;">with |</span><span style="color:#c0c5ce;"> `</span><span style="color:#d08770;">0 </span><span style="color:#bf616a;">x </span><span style="color:#c0c5ce;">-&gt;
+    (</span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> x </span><span style="color:#b48ead;">with |</span><span style="color:#c0c5ce;"> `</span><span style="color:#d08770;">1 </span><span style="color:#bf616a;">x </span><span style="color:#c0c5ce;">-&gt;
+    (</span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> x </span><span style="color:#b48ead;">with | </span><span style="color:#c0c5ce;">`End </span><span style="color:#d08770;">_ </span><span style="color:#c0c5ce;">-&gt; _)))))))))
+</span></code></pre>
+<p>你可以在下面的演示中验证它都是在编译时计算出来的。改变最后输出断言中的任何数字都会导致编译时的类型错误。警告：编译这个程序可能相当慢。我选择了 256 个滴答，因为这在我的电脑上运行得相当好，但如果演示开始变得太慢，请尝试刷新页面。</p>
+<h2 id="yan-shi">演示</h2>
+<script src="./p13/demo.js"></script>
+<p><cubiml-demo></cubiml-demo></p>
+<h2 id="jie-lun">结论</h2>
+<p>现在我们已经将类型系统推向了极限，<a href="/blog/subtype-inference-by-example-part-14-type-annotation/">下周</a>我将开始介绍如何添加显式类型注释。到目前为止，我已经避开了它们，因为这个系列的重要部分是类型推理，当你必须在多个地方更新所有的东西，并在手动类型注释语法中也处理它们时，向类型系统添加新的功能会更加复杂和烦人。但是，只是因为可以在没有类型注释的情况下写出整个程序，并不意味着这必然是个好主意，所以在“真实世界”的编程语言中支持类型注释是很重要的。</p>
+
+    </div>
+
+
+</article>
+
+
+        </main>
+        <footer>
+            <p>
+                © 2021 firecodelab.com
+            </p>
+            <p>
+                
+                
+            </p>
+        </footer>
+    </div>
+</body>
+</html>

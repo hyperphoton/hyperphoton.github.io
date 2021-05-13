@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="zh-cn">
+<head>
+    <meta charset="utf-8">
+    <meta name="HandheldFriendly" content="True">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="referrer" content="no-referrer-when-downgrade">
+
+    <title>[译]通过例子学子类型推理（四）：类型检查器核心</title>
+    <meta name="description" content="">
+
+    <link rel="stylesheet" href="https:&#x2F;&#x2F;firecodelab.com&#x2F;main.css">
+
+    
+
+    
+    
+</head>
+<body>
+    <a class="skip-main" href="#main">Skip to content</a>
+    <div class="container">
+        <header>
+            <h1 class="site-header">
+                <a href="https:&#x2F;&#x2F;firecodelab.com">Fire Code</a>
+            </h1>
+            <nav>
+                
+                
+                
+                <a  href="&#x2F;blog&#x2F;">博客</a>
+                
+                
+                <a  href="&#x2F;about&#x2F;">关于</a>
+                
+                
+            </nav>
+        </header>
+        <main id="main" tabindex="-1">
+            
+
+<article class="post">
+    <header>
+        <h1>[译]通过例子学子类型推理（四）：类型检查器核心</h1>
+    </header>
+
+    
+    <div class="article-info">
+        
+        <div class="article-date">2021-04-04</div>
+        
+        <div class="article-taxonomies">
+            
+                <ul class="article-tags">
+                    
+                    <li><a href="https://firecodelab.com/tags/translate/">#translate</a></li>
+                    
+                    <li><a href="https://firecodelab.com/tags/compiler/">#compiler</a></li>
+                    
+                    <li><a href="https://firecodelab.com/tags/type-inference/">#type inference</a></li>
+                    
+                </ul>
+            
+        </div>
+        
+        <div class="article-original">[<a href="https:&#x2F;&#x2F;blog.polybdenum.com&#x2F;2020&#x2F;07&#x2F;25&#x2F;subtype-inference-by-example-part-4-the-typechecker-core.html" target="_blank">view original</a>]</div>
+        
+    </div>
+
+
+    <div class="content">
+        <p><a href="/blog/subtype-inference-by-example-part-3-the-typechecker-frontend">上周</a>，我们介绍了 cubiml 类型检查器前端的实现，即类型检查器负责将抽象语法树转化为双合一类型和约束的部分。今天我们将介绍<em>类型检查器核心</em>，这部分负责实际创建这些类型和约束，并检查它们的一致性。</p>
+<h2 id="lei-xing-tu">类型图</h2>
+<p>在深入实际代码之前，我们先对设计进行概述。</p>
+<p>回忆一下， cubiml 的类型系统是<em>极化的</em>，即分为两种类型类，<em>值类型</em>和<em>用类型</em>。前者是针对程序值的类型，后者是针对值<em>用</em>的类型，也就是给定的表达式对其操作数的约束。</p>
+<h3 id="lei-xing-gou-zao-qi">类型构造器</h3>
+<p>除了极化之外，我们还可以通过<em>类型构造器</em>来对类型进行分类。类型构造器允许你从较简单的类型中建立起复杂的类型。例如，如果你有类型 <code>T </code>和 <code>U</code>，那么函数类型定义为 <code>T -&gt; U</code> 的函数的类型构造器接收 <code>T</code> 作为参数并返回 <code>U</code>。</p>
+<p>类型构造器可以认为是接收一些类型作为输入并返回新类型的函数。<em>基础</em>类型，如布尔，可以认为是不接收参数的类型构造器的结果。对于 cubiml 的初始版本，类型系统有四个类型构造器：布尔、函数、记录和 case 类型。布尔是基础类型，而函数构造器有两个参数 - 参数类型和返回类型。记录和 case 构造器有两个参数 - 参数类型和返回类型。记录和 case 构造器接收组件类型的<em>映射</em>，分别对应每个字段或 case。</p>
+<h3 id="di-gui-lei-xing">递归类型</h3>
+<p>传统上，类型被表示为一棵<em>树</em>，树上的每个节点代表一个类型构造器，每个子节点代表该类型构造器的参数，叶子节点是变量或基础类型，即没有参数的类型构造器。然而，在双合一中，类型被表示为<em>图</em>中的节点，图中可能包含循环，开启<em>递归类型</em>，或作为子组件引用到自己的类型。</p>
+<p>显式类型系统<em>语法</em>自然地映射到基于树的方法上，节点对应于解析过的类型语法本身的抽象语法树中的节点。这使得递归类型难以处理语法方面的问题，但幸运的是，我们暂时不用担心这个问题，因为反正我们没有任何引用到类型的语法。基于图的方法使得递归类型在处理实际算法的时候很轻松自然，尽管在语法上表示它们有困难。</p>
+<p>在 cubiml 的表示中，类型图中的每个节点都包含了关于它是用哪个类型构造器（如果有的话）定义的信息，我们将其称为<em>类型头</em>。此外，头还可以存储指向图中其他节点的指针，代表该类型的子组件。</p>
+<p>除了代表头-&gt;组件关系的节点之间的边之外，类型图还包含了另外一种类型的边，<em>流约束</em>。回想一下，流约束表示程序值跟随输入程序中的使用点，并施加了一个约束条件，即值类型必须与相应的用类型兼容。</p>
+<h3 id="bian-liang-lei-xing">变量类型</h3>
+<p>回顾一下，在双合一下，类型变量由一<em>对</em>类型表示 - 用类型和值类型。从概念上讲，用类型表示<em>分配</em>给该变量的类型，而值类型表示从变量中<em>读取</em>的类型。当然，我们需要确保分配给变量的类型与从该变量中读取的类型兼容（即一个子类型）。然而，有形式为 <code>v &lt;= u</code> 的子类型约束（流关系），以及形式为 <code>u &lt;= v</code> 的约束（变量完整性约束），导致子类型约束循环，使得类型检查无法确定。</p>
+<p>在立方双合一中，我们通过不在类型图中显式表示变量完整性约束来解决这个问题。相反，它们是通过类型检查算法的行为来隐式维护的。该算法通过确保<em>流</em>关系的传递性来实现。对于每一个变量 <code>(u1，v1)</code>，以及每一个流向 <code>u1</code> 的值类型 <code>v2</code> 和每一个 <code>v1</code> 流向的用类型 <code>u2</code>，我们都会添加 <code>v2</code> 流向 <code>u2</code> 的约束条件。本质上，变量的行为就像类型图中的小隧道或虫洞。无论进入一端的是什么，都会从另一端出来。</p>
+<blockquote>
+<p><strong>注:</strong> 这不是唯一可能的解决方案。代数子类型化，引入双合一概念的论文，实际上采取的是<strong>相反的</strong>方法。在代数子类型化下，变量完整性约束（在论文中被混淆地称为流约束）在类型图中被显式表示，而我们所说的流约束并没有在类型图中显式表示，而是通过类型检查算法的行为隐式维护。不过，我们的方式，使算法更加简单易懂。</p>
+</blockquote>
+<p>我们的方法的一个优点是，由于变量完整性约束是隐式表示的，所以变量表示本身可以折叠成图中的一个节点。我们不使用一对节点，而只使用一个节点，并从上下文中确定变量的哪“边”被引用。当变量节点出现在流约束左侧时，它被视为值类型，而出现在右侧时，它被视为用类型。</p>
+<h2 id="lei-xing-jian-cha-suan-fa">类型检查算法</h2>
+<p>说完这些，核心的类型检查算法出奇的简单。只有两部分 - 类型检查头节点（类型构造器），保持<em>流</em>关系的传递性，我们将在<a href="/blog/subtype-inference-by-example-part-5-incremental-reachability">下一篇</a>中介绍。类型检查头只是确保每一方使用相同的类型构造器，然后插入额外的流边来递归地确保相应的子组件类型也是兼容的。</p>
+<p>例如，假设有函数值类型 <code>T1 -&gt; U1</code>，流向函数用类型 <code>T2 -&gt; U2</code>。因为两个头都是函数，所以这部分就可以检查出来。然后我们插入流边，说 <code>U1</code> 流向 <code>U2</code>，<code>T2</code> 流向 <code>T1</code>。这样就保证了函数定义的返回值流向调用方返回的值，调用方传递的参数流向函数定义中的参数。</p>
+<h2 id="xian-zai-lai-kan-yi-xie-dai-ma">现在来看一些代码</h2>
+<p>在进入真正的代码之前，还有一些错误处理样板要做。它定义了 <code>TypeError</code> 类型，当检测到类型错误时返回该类型，就像上一篇中定义的 <code>SyntaxError</code> 一样。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">#[</span><span style="color:#bf616a;">derive</span><span style="color:#c0c5ce;">(Debug)]
+</span><span style="color:#b48ead;">pub struct </span><span style="color:#c0c5ce;">TypeError(String);
+</span><span style="color:#b48ead;">impl </span><span style="color:#c0c5ce;">fmt::Display </span><span style="color:#b48ead;">for </span><span style="color:#c0c5ce;">TypeError {
+    </span><span style="color:#b48ead;">fn </span><span style="color:#8fa1b3;">fmt</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">f</span><span style="color:#c0c5ce;">: &amp;</span><span style="color:#b48ead;">mut </span><span style="color:#c0c5ce;">fmt::Formatter) -&gt; fmt::Result {
+        f.</span><span style="color:#96b5b4;">write_str</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">)
+    }
+}
+</span><span style="color:#b48ead;">impl </span><span style="color:#c0c5ce;">error::Error </span><span style="color:#b48ead;">for </span><span style="color:#c0c5ce;">TypeError {}
+</span></code></pre>
+<p>接下来，我们用类型来表示类型。从概念上讲，每个类型的表示只是图中指向节点的一个指针。然而，使用图指针是不方便的，所以我们只需将图中的每个节点存储在一个巨大的列表中，并使用进入该列表的索引作为“指针”。因此，我们定义内部类型 <code>ID</code>，代表对类型图中节点的引用，作为 <code>usize</code> 的别名，一个无符号整型。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#b48ead;">type </span><span style="color:#c0c5ce;">ID = </span><span style="color:#b48ead;">usize</span><span style="color:#c0c5ce;">;
+
+#[</span><span style="color:#bf616a;">derive</span><span style="color:#c0c5ce;">(Copy, Clone, Debug)]
+</span><span style="color:#b48ead;">pub struct </span><span style="color:#c0c5ce;">Value(ID);
+#[</span><span style="color:#bf616a;">derive</span><span style="color:#c0c5ce;">(Copy, Clone, Debug)]
+</span><span style="color:#b48ead;">pub struct </span><span style="color:#c0c5ce;">Use(ID);
+</span></code></pre>
+<p>为了帮助调用者（即类型检查器前端）预防 bug，我们将 <code>ID</code> 类型包装成两个新的类型，<code>Value</code> 和 <code>Use</code>，分别代表指向解释为值和用类型的节点的指针。在底层图中，节点只是节点，极性由上下文来维护，但我们用不同的类型来包装它们，以防调用者把它们混为一谈。这样就保证了前端看不到底层的整数，只有不透明的值可以传递。</p>
+<h3 id="lei-xing-tou">类型头</h3>
+<p>接下来，头类型的定义，即类型构造器。前缀分别是 V 和 U，表示值和用，以避免命名冲突。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">#[</span><span style="color:#bf616a;">derive</span><span style="color:#c0c5ce;">(Debug, Clone)]
+</span><span style="color:#b48ead;">enum </span><span style="color:#c0c5ce;">VTypeHead {
+    VBool,
+    VFunc { arg: Use, ret: Value },
+    VObj { fields: HashMap&lt;String, Value&gt; },
+    VCase { case: (String, Value) },
+}
+#[</span><span style="color:#bf616a;">derive</span><span style="color:#c0c5ce;">(Debug, Clone)]
+</span><span style="color:#b48ead;">enum </span><span style="color:#c0c5ce;">UTypeHead {
+    UBool,
+    UFunc { arg: Value, ret: Use },
+    UObj { field: (String, Use) },
+    UCase { cases: HashMap&lt;String, Use&gt; },
+}
+</span></code></pre>
+<p>接下来， <code>check_heads</code>，这个函数用于检查头类型的兼容性。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#b48ead;">fn </span><span style="color:#8fa1b3;">check_heads</span><span style="color:#c0c5ce;">(</span><span style="color:#bf616a;">lhs</span><span style="color:#c0c5ce;">: &amp;VTypeHead, </span><span style="color:#bf616a;">rhs</span><span style="color:#c0c5ce;">: &amp;UTypeHead, </span><span style="color:#bf616a;">out</span><span style="color:#c0c5ce;">: &amp;</span><span style="color:#b48ead;">mut </span><span style="color:#c0c5ce;">Vec&lt;(Value, Use)&gt;) -&gt; Result&lt;(), TypeError&gt; {
+</span></code></pre>
+<p>这个函数需要一些解释。每当<em>值</em>类型头流向<em>用</em>类型头时，<code>check_heads</code> 就会被调用，以确保这些类型是兼容的。这些分别作为 <code>lhs</code> 和 <code>rhs</code> 传递。其次，如果头不匹配，它可以返回 <code>TypeError</code>，所以 <code>check_heads</code> 的返回类型是 <code>Result&lt;()，TypeError&gt;</code>。</p>
+<p>最后，头检查过程可以引入额外的流约束，如前所述。为了避免不必要的复制和分配，我们通过<em>外部参数</em> <code>out</code> 而不是函数返回类型来返回新的流边。调用者需要传递指针到持有 <code>(Value，Use)</code> 对的列表，我们为每个需要创建的新流边向该列表追加一个条目。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#b48ead;">use </span><span style="color:#c0c5ce;">UTypeHead::*;
+</span><span style="color:#b48ead;">use </span><span style="color:#c0c5ce;">VTypeHead::*;
+
+</span><span style="color:#b48ead;">match </span><span style="color:#c0c5ce;">(lhs, rhs) {
+    (&amp;VBool, &amp;UBool) =&gt; Ok(()),
+</span></code></pre>
+<p>接下来，我们在输入类型头上进行匹配，根据要处理的类型构造器做不同的事情。第一种情况是最简单的 - 当两边都是布尔型时，不需要进一步的操作。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">(&amp;VFunc { arg: arg1, ret: ret1 }, &amp;UFunc { arg: arg2, ret: ret2 }) =&gt; {
+    out.</span><span style="color:#96b5b4;">push</span><span style="color:#c0c5ce;">((ret1, ret2));
+    </span><span style="color:#65737e;">// 反转顺序，因为参数是逆变的
+</span><span style="color:#c0c5ce;">    out.</span><span style="color:#96b5b4;">push</span><span style="color:#c0c5ce;">((arg2, arg1));
+    Ok(())
+}
+</span></code></pre>
+<p>在函数类型的情况下，我们增加从左返回类型到右返回类型，从<em>右</em>参数类型到左参数类型的流边约束。参数类型的流边是反向的，因为函数参数是<em>逆变的</em>。这听起来可能很吓人，但当你考虑到实际需要的关系时，它是有意义的。如前所述，我们需要确保函数定义的返回值流向调用方返回值，而<em>调用方</em>传递的参数流向<em>函数定义</em>中的参数。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">(&amp;VObj { fields: </span><span style="color:#b48ead;">ref</span><span style="color:#c0c5ce;"> fields1 }, &amp;UObj { field: (</span><span style="color:#b48ead;">ref</span><span style="color:#c0c5ce;"> name, rhs2) }) =&gt; {
+    </span><span style="color:#65737e;">// 检查访问的字段是否被定义
+    </span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> fields1.</span><span style="color:#96b5b4;">get</span><span style="color:#c0c5ce;">(name) {
+        Some(&amp;lhs2) =&gt; {
+            out.</span><span style="color:#96b5b4;">push</span><span style="color:#c0c5ce;">((lhs2, rhs2));
+            Ok(())
+        }
+        None =&gt; Err(TypeError(format!(&quot;</span><span style="color:#a3be8c;">Missing field </span><span style="color:#d08770;">{}</span><span style="color:#c0c5ce;">&quot;, name))),
+    }
+}
+</span></code></pre>
+<p>对于记录类型，我们检查右侧访问的字段是否也存在于左侧代表的记录字面量中。如果是，我们在字段类型之间添加一个流边，否则返回 <code>TypeError</code>，因为我们试图访问一个不存在的字段。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">(&amp;VCase { case: (</span><span style="color:#b48ead;">ref</span><span style="color:#c0c5ce;"> name, lhs2) }, &amp;UCase { cases: </span><span style="color:#b48ead;">ref</span><span style="color:#c0c5ce;"> cases2 }) =&gt; {
+    </span><span style="color:#65737e;">// 检查是否处理了正确的 case
+    </span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> cases2.</span><span style="color:#96b5b4;">get</span><span style="color:#c0c5ce;">(name) {
+        Some(&amp;rhs2) =&gt; {
+            out.</span><span style="color:#96b5b4;">push</span><span style="color:#c0c5ce;">((lhs2, rhs2));
+            Ok(())
+        }
+        None =&gt; Err(TypeError(format!(&quot;</span><span style="color:#a3be8c;">Unhandled case </span><span style="color:#d08770;">{}</span><span style="color:#c0c5ce;">&quot;, name))),
+    }
+}
+</span></code></pre>
+<p>Case 类型是记录类型的镜像，处理方式也类似。这次，我们要检查<em>左侧</em>定义的 case 标签是否出现在<em>右</em>面代表的匹配表达式所处理的 case 标签中。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">        _ =&gt; Err(TypeError(&quot;</span><span style="color:#a3be8c;">Unexpected types</span><span style="color:#c0c5ce;">&quot;.</span><span style="color:#96b5b4;">to_string</span><span style="color:#c0c5ce;">())),
+    }
+}
+</span></code></pre>
+<p>最后，在所有其他情况下，返回 <code>TypeError</code>。如果到达这个分支，意味着两个头使用了不同的类型构造器。例如，可能左边是布尔类型，右边是函数调用。目前，我们只是返回一个通用的消息，并不是特别有用。我们将在以后的文章中介绍添加更好的错误信息。</p>
+<h3 id="lei-xing-tu-1">类型图</h3>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">#[</span><span style="color:#bf616a;">derive</span><span style="color:#c0c5ce;">(Debug, Clone)]
+</span><span style="color:#b48ead;">enum </span><span style="color:#c0c5ce;">TypeNode {
+    Var,
+    Value(VTypeHead),
+    Use(UTypeHead),
+}
+
+#[</span><span style="color:#bf616a;">derive</span><span style="color:#c0c5ce;">(Debug, Clone)]
+</span><span style="color:#b48ead;">pub struct </span><span style="color:#c0c5ce;">TypeCheckerCore {
+    </span><span style="color:#bf616a;">r</span><span style="color:#c0c5ce;">: reachability::Reachability,
+    </span><span style="color:#bf616a;">types</span><span style="color:#c0c5ce;">: Vec&lt;TypeNode&gt;,
+}
+</span></code></pre>
+<p>类型图的实现大多是直接的，除了一个细节。回顾一下，类型图可以有两种不同类型的边 - 流边和从类型头到其子组件类型的边。为了简化事情，跟踪流边被抽象成了单独的类，叫做 <code>Reachability</code>。我们将在下一篇文章中介绍它的实现，现在，你只需要知道它的公共接口：</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#b48ead;">impl </span><span style="color:#c0c5ce;">Reachability {
+    </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">add_node</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">) -&gt; ID;
+    </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">add_edge</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">lhs</span><span style="color:#c0c5ce;">: ID, </span><span style="color:#bf616a;">rhs</span><span style="color:#c0c5ce;">: ID, </span><span style="color:#bf616a;">out</span><span style="color:#c0c5ce;">: &amp;</span><span style="color:#b48ead;">mut </span><span style="color:#c0c5ce;">Vec&lt;(ID, ID)&gt;);
+}
+</span></code></pre>
+<p><code>Reachability</code> 在内部维护了一个节点和边的图，以跟踪流关系。与之前一样，节点存储在列表中，所以我们可以使用 <code>ID</code>（无符号整型）作为节点的“指针”。<code>TypeCheckerCore</code> 本身维护了一个<em>单独的</em>节点和类型头边的图。为了避免为图的每一半跟踪单独的“指针” ID，我们保持两个列表 1:1 匹配的不变性，每个类型节点的结果都是在两个列表中相同位置的节点，所以我们可以在 <code>TypeCheckerCore</code> 和 <code>Reachability</code> 之间自由混合 <code>ID</code>。</p>
+<p>添加流边可能会导致添加额外的流边，以保持传递性，所以 <code>add_edge</code> 方法会以一个列表作为额外参数，在这个列表中存储所有被添加的边，类似于上面 <code>check_heads</code> “返回”额外边的方式。</p>
+<p>接下来是公共构造函数，都很直接。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#b48ead;">impl </span><span style="color:#c0c5ce;">TypeCheckerCore {
+    </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">new</span><span style="color:#c0c5ce;">() -&gt; </span><span style="color:#b48ead;">Self </span><span style="color:#c0c5ce;">{
+        </span><span style="color:#b48ead;">Self </span><span style="color:#c0c5ce;">{
+            r: Default::default(),
+            types: Vec::new(),
+        }
+    }
+
+    </span><span style="color:#b48ead;">fn </span><span style="color:#8fa1b3;">new_val</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">val_type</span><span style="color:#c0c5ce;">: VTypeHead) -&gt; Value {
+        </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> i = </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.r.</span><span style="color:#96b5b4;">add_node</span><span style="color:#c0c5ce;">();
+        assert!(i == </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.types.</span><span style="color:#96b5b4;">len</span><span style="color:#c0c5ce;">());
+        </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.types.</span><span style="color:#96b5b4;">push</span><span style="color:#c0c5ce;">(TypeNode::Value(val_type));
+        Value(i)
+    }
+
+    </span><span style="color:#b48ead;">fn </span><span style="color:#8fa1b3;">new_use</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">constraint</span><span style="color:#c0c5ce;">: UTypeHead) -&gt; Use {
+        </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> i = </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.r.</span><span style="color:#96b5b4;">add_node</span><span style="color:#c0c5ce;">();
+        assert!(i == </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.types.</span><span style="color:#96b5b4;">len</span><span style="color:#c0c5ce;">());
+        </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.types.</span><span style="color:#96b5b4;">push</span><span style="color:#c0c5ce;">(TypeNode::Use(constraint));
+        Use(i)
+    }
+
+    </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">var</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">) -&gt; (Value, Use) {
+        </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> i = </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.r.</span><span style="color:#96b5b4;">add_node</span><span style="color:#c0c5ce;">();
+        assert!(i == </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.types.</span><span style="color:#96b5b4;">len</span><span style="color:#c0c5ce;">());
+        </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.types.</span><span style="color:#96b5b4;">push</span><span style="color:#c0c5ce;">(TypeNode::Var);
+        (Value(i), Use(i))
+    }
+
+    </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">bool</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">) -&gt; Value {
+        </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">new_val</span><span style="color:#c0c5ce;">(VTypeHead::VBool)
+    }
+    </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">bool_use</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">) -&gt; Use {
+        </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">new_use</span><span style="color:#c0c5ce;">(UTypeHead::UBool)
+    }
+
+    </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">func</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">arg</span><span style="color:#c0c5ce;">: Use, </span><span style="color:#bf616a;">ret</span><span style="color:#c0c5ce;">: Value) -&gt; Value {
+        </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">new_val</span><span style="color:#c0c5ce;">(VTypeHead::VFunc { arg, ret })
+    }
+    </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">func_use</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">arg</span><span style="color:#c0c5ce;">: Value, </span><span style="color:#bf616a;">ret</span><span style="color:#c0c5ce;">: Use) -&gt; Use {
+        </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">new_use</span><span style="color:#c0c5ce;">(UTypeHead::UFunc { arg, ret })
+    }
+
+    </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">obj</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">fields</span><span style="color:#c0c5ce;">: Vec&lt;(String, Value)&gt;) -&gt; Value {
+        </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> fields = fields.</span><span style="color:#96b5b4;">into_iter</span><span style="color:#c0c5ce;">().</span><span style="color:#96b5b4;">collect</span><span style="color:#c0c5ce;">();
+        </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">new_val</span><span style="color:#c0c5ce;">(VTypeHead::VObj { fields })
+    }
+    </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">obj_use</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">field</span><span style="color:#c0c5ce;">: (</span><span style="color:#bf616a;">String</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">Use</span><span style="color:#c0c5ce;">)) -&gt; Use {
+        </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">new_use</span><span style="color:#c0c5ce;">(UTypeHead::UObj { field })
+    }
+
+    </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">case</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">case</span><span style="color:#c0c5ce;">: (</span><span style="color:#bf616a;">String</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">Value</span><span style="color:#c0c5ce;">)) -&gt; Value {
+        </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">new_val</span><span style="color:#c0c5ce;">(VTypeHead::VCase { case })
+    }
+    </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">case_use</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">cases</span><span style="color:#c0c5ce;">: Vec&lt;(String, Use)&gt;) -&gt; Use {
+        </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> cases = cases.</span><span style="color:#96b5b4;">into_iter</span><span style="color:#c0c5ce;">().</span><span style="color:#96b5b4;">collect</span><span style="color:#c0c5ce;">();
+        </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">new_use</span><span style="color:#c0c5ce;">(UTypeHead::UCase { cases })
+    }
+}
+</span></code></pre>
+<p>这里需要注意的是 <code>let fields = fields.into_iter().collect();</code> 这一行，它将字段从 <code>Vec</code> 转换为 <code>HashMap</code>，因为 <code>obj</code> 方法接收（名称，类型）字段对<em>列表</em>，但类型头将字段存储为<em>映射</em>。同样，对于 <code>case_use</code> 方法也是如此。</p>
+<p>最后，<code>flow</code> 方法，所有的神奇都发生在这里。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">flow</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">lhs</span><span style="color:#c0c5ce;">: Value, </span><span style="color:#bf616a;">rhs</span><span style="color:#c0c5ce;">: Use) -&gt; Result&lt;(), TypeError&gt; {
+    </span><span style="color:#b48ead;">let mut</span><span style="color:#c0c5ce;"> pending_edges = vec![(lhs, rhs)];
+    </span><span style="color:#b48ead;">let mut</span><span style="color:#c0c5ce;"> type_pairs_to_check = Vec::new();
+    </span><span style="color:#b48ead;">while let </span><span style="color:#c0c5ce;">Some((lhs, rhs)) = pending_edges.</span><span style="color:#96b5b4;">pop</span><span style="color:#c0c5ce;">() {
+        </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.r.</span><span style="color:#96b5b4;">add_edge</span><span style="color:#c0c5ce;">(lhs.</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">, rhs.</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">, &amp;</span><span style="color:#b48ead;">mut</span><span style="color:#c0c5ce;"> type_pairs_to_check);
+
+        </span><span style="color:#65737e;">// 检查添加该边是否导致任何新的类型对需要检查
+        </span><span style="color:#b48ead;">while let </span><span style="color:#c0c5ce;">Some((lhs, rhs)) = type_pairs_to_check.</span><span style="color:#96b5b4;">pop</span><span style="color:#c0c5ce;">() {
+            </span><span style="color:#b48ead;">if let </span><span style="color:#c0c5ce;">TypeNode::Value(lhs_head) = &amp;</span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.types[lhs] {
+                </span><span style="color:#b48ead;">if let </span><span style="color:#c0c5ce;">TypeNode::Use(rhs_head) = &amp;</span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.types[rhs] {
+                    </span><span style="color:#96b5b4;">check_heads</span><span style="color:#c0c5ce;">(lhs_head, rhs_head, &amp;</span><span style="color:#b48ead;">mut</span><span style="color:#c0c5ce;"> pending_edges)?;
+                }
+            }
+        }
+    }
+    assert!(pending_edges.</span><span style="color:#96b5b4;">is_empty</span><span style="color:#c0c5ce;">() &amp;&amp; type_pairs_to_check.</span><span style="color:#96b5b4;">is_empty</span><span style="color:#c0c5ce;">());
+    Ok(())
+}
+</span></code></pre>
+<p>这个方法本质上只是在循环中调用 <code>add_edge</code> 和 <code>check_heads</code>，直到收敛。为了添加一个流边，我们调用 <code>add_edge</code>，如果还没有的话，就添加这个边，以及保持流传递性所需的任何额外边。每当添加一条流边时，我们还需要检查这些节点头的一致性。然而，头检查过程本身可能需要添加新的流边。</p>
+<p>因此，我们维护了两个工作列表。<code>pending_edges</code> 是需要在可到达性图中插入的流边列表。<code>type_pairs_to_check</code> 是已经添加的、仍然需要进行类型检查的边列表。最初，<code>type_pairs_to_check</code> 是空的，<code>pending_edges</code> 只包含单个对，作为 <code>flow</code> 方法的输入给出。</p>
+<p>只要 <code>pending_edges</code> 非空，我们就从中弹出一项，并将其传递给 <code>add_edge</code>，后者可能会将对插入到 <code>type_pairs_to_check</code>。只要 <code>type_pairs_to_check</code> 非空，我们就从中弹出一项，检查每个末端是否是类型头，如果是，就在其上调用 <code>check_heads</code>，这可能会依次把对插入到 <code>pending_edges</code> 中。如果 <code>check_heads</code> 返回 <code>TypeError</code>，就停止并将错误返回给调用者(这就是最后那个小 <code>?</code> 的作用)，否则，就继续循环，直到处理完所有的待处理工作。</p>
+<p>现在我们已经涵盖了实现子类型推理所需的几乎所有代码。在<a href="/blog/subtype-inference-by-example-part-5-incremental-reachability">下一篇</a>中，我们将介绍最后一块拼图 -  <code>Reachability</code> 的实现。</p>
+
+    </div>
+
+
+</article>
+
+
+        </main>
+        <footer>
+            <p>
+                © 2021 firecodelab.com
+            </p>
+            <p>
+                
+                
+            </p>
+        </footer>
+    </div>
+</body>
+</html>

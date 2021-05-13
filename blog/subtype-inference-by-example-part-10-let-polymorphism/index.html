@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="zh-cn">
+<head>
+    <meta charset="utf-8">
+    <meta name="HandheldFriendly" content="True">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="referrer" content="no-referrer-when-downgrade">
+
+    <title>[译]通过例子学子类型推理（十）：Let 多态</title>
+    <meta name="description" content="">
+
+    <link rel="stylesheet" href="https:&#x2F;&#x2F;firecodelab.com&#x2F;main.css">
+
+    
+
+    
+    
+</head>
+<body>
+    <a class="skip-main" href="#main">Skip to content</a>
+    <div class="container">
+        <header>
+            <h1 class="site-header">
+                <a href="https:&#x2F;&#x2F;firecodelab.com">Fire Code</a>
+            </h1>
+            <nav>
+                
+                
+                
+                <a  href="&#x2F;blog&#x2F;">博客</a>
+                
+                
+                <a  href="&#x2F;about&#x2F;">关于</a>
+                
+                
+            </nav>
+        </header>
+        <main id="main" tabindex="-1">
+            
+
+<article class="post">
+    <header>
+        <h1>[译]通过例子学子类型推理（十）：Let 多态</h1>
+    </header>
+
+    
+    <div class="article-info">
+        
+        <div class="article-date">2021-04-10</div>
+        
+        <div class="article-taxonomies">
+            
+                <ul class="article-tags">
+                    
+                    <li><a href="https://firecodelab.com/tags/translate/">#translate</a></li>
+                    
+                    <li><a href="https://firecodelab.com/tags/compiler/">#compiler</a></li>
+                    
+                    <li><a href="https://firecodelab.com/tags/type-inference/">#type inference</a></li>
+                    
+                </ul>
+            
+        </div>
+        
+        <div class="article-original">[<a href="https:&#x2F;&#x2F;blog.polybdenum.com&#x2F;2020&#x2F;09&#x2F;05&#x2F;subtype-inference-by-example-part-10-let-polymorphism.html" target="_blank">view original</a>]</div>
+        
+    </div>
+
+
+    <div class="content">
+        <p><a href="/blog/subtype-inference-by-example-part-9-nonexhaustive-matching-record-extensions-and-row-polymorphism">上周</a>，我们为 cubiml 添加了不完全匹配和记录扩展。今天我们处理 <em>let 多态</em>。</p>
+<h2 id="let-duo-tai">Let 多态</h2>
+<p>到目前为止，类型系统中的所有东西都是<em>单态的</em>，这意味着每个表达式都推导出单一类型。然而，在某些情况下，这是不适当的限制。考虑以下代码示例</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#b48ead;">let </span><span style="color:#bf616a;">id </span><span style="color:#c0c5ce;">= fun x -&gt; x;
+
+(id </span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">) + </span><span style="color:#d08770;">3</span><span style="color:#c0c5ce;">;
+(id &quot;</span><span style="color:#a3be8c;">x</span><span style="color:#c0c5ce;">&quot;) ^ &quot;</span><span style="color:#a3be8c;">y</span><span style="color:#c0c5ce;">&quot;;
+</span></code></pre>
+<p>目前，这导致了类型错误，因为 <code>id</code> 被迫是单态的，给它推断的类型是 <code>(int &amp; string) -&gt; (int | string)</code>。本质上，单态意味着编译器认为来自<em>任何</em>函数调用的参数都有可能流向<em>每个</em>函数调用的结果。因此，如果我们用整型调用函数，后来又用字符串，它们就会在函数类型中混在一起，导致错误。</p>
+<p>为了使上述代码通过类型检查，我们需要在类型检查器中加入<em>上下文敏感</em>，使编译器对同一函数的不同调用保持分离，并理解只有特定调用的参数可能流向该特定调用的结果。</p>
+<p>Hindley-Milner 系统通过一个称为 <em>let 多态</em>的特性来处理这个问题。基本上，当推断 let 绑定变量的类型时（即 <code>let v = e1 in e2</code>），我们不是为 <code>v</code> 推断单一单态类型，而是推断<em>类型方案</em>。</p>
+<h3 id="lei-xing-fang-an">类型方案</h3>
+<p>类型方案基本上是一个模板，可以用来根据需求标记新的类型。对于 let 绑定变量，我们在类型环境中存储类型方案，而不是单一类型。每当变量被引用时，方案就会被用来标记一个新类型，这个新类型是针对变量的特定用法的。</p>
+<p>在上面的代码示例中，如果没有 let 多态，<code>id</code> 将具有推导类型 <code>T -&gt; T</code>。在这种情况下，<code>T</code> 是单类型变量，这意味着 <code>id</code> 的每一次使用都必须共享 <code>T</code> 的<em>相同</em>的值，从而导致上述错误。通过 let 多态，我们可以推导出类型方案 <code>forall T =&gt; (T -&gt; T)</code>。这就是说，每当引用 <code>id</code> 时，我们就创建<em>新</em>类型变量，然后返回类型 <code>T -&gt; T</code>，其中 <code>T</code> 是新创建的变量。这意味着，对 <code>id</code> 的不同使用将有<em>不同</em>的类型变量 <code>T</code>，根本不会相互影响，意味着一个可以用 <code>int</code> 代替，另一个可以用 <code>string</code> 代替，而不会造成任何虚假的类型错误。</p>
+<h3 id="lan-duo-let-duo-tai">懒惰 let 多态</h3>
+<p>实现 let 多态的方法有很多，但现在，我们只选择最简单、最懒惰的合适实现，以使事情更容易理解，即使它比更优实现慢。</p>
+<p>回想一下，前面代码例子中的问题是，我们希望每次引用时，都能用不同的类型重用（let 绑定）<code>id</code> 函数。如果没有多态性，我们仍然可以解决这个问题，只要在每次引用函数时重复该函数的代码即可。例如，如果将上面的代码重写如下，即使没有 let 多态，它也会通过类型检查。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#b48ead;">let </span><span style="color:#bf616a;">id </span><span style="color:#c0c5ce;">= fun x -&gt; x
+    </span><span style="color:#b48ead;">in  </span><span style="color:#c0c5ce;">(id </span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">) + </span><span style="color:#d08770;">3</span><span style="color:#c0c5ce;">;
+
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">id </span><span style="color:#c0c5ce;">= fun x -&gt; x
+    </span><span style="color:#b48ead;">in  </span><span style="color:#c0c5ce;">(id &quot;</span><span style="color:#a3be8c;">x</span><span style="color:#c0c5ce;">&quot;) ^ &quot;</span><span style="color:#a3be8c;">y</span><span style="color:#c0c5ce;">&quot;;
+</span></code></pre>
+<p>基本上，let 多态的目标是能够编写一个函数，并让类型检查器在每次引用它进行类型检查时都把它当作是重复的，但在运行时仍然只有一个函数的实际副本。最简单的方法是每当类型方案被实例化时，在定义的代码上重新运行类型检查器（后面我们将介绍一些注意事项）。</p>
+<h2 id="shi-xian">实现</h2>
+<p>之前，我们在前端的类型环境中存储了普通类型（变量名与之前推导类型的映射）。因此，开始时，我们需要修改它来存储类型方案。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">#[</span><span style="color:#bf616a;">derive</span><span style="color:#c0c5ce;">(Clone)]
+</span><span style="color:#b48ead;">enum </span><span style="color:#c0c5ce;">Scheme {
+    Mono(Value),
+    Poly(Rc&lt;dyn Fn(&amp;</span><span style="color:#b48ead;">mut</span><span style="color:#c0c5ce;"> TypeCheckerCore) -&gt; Result&lt;Value&gt;&gt;),
+}
+
+</span><span style="color:#b48ead;">struct </span><span style="color:#c0c5ce;">Bindings {
+    </span><span style="color:#bf616a;">m</span><span style="color:#c0c5ce;">: HashMap&lt;String, Scheme&gt;,
+    </span><span style="color:#bf616a;">changes</span><span style="color:#c0c5ce;">: Vec&lt;(String, Option&lt;Scheme&gt;)&gt;,
+}
+</span></code></pre>
+<p>之前，绑定存储的是 <code>String -&gt; Value</code> 映射。我们定义了新枚举 <code>Scheme</code>，并将其改为 <code>String -&gt; Scheme</code> 映射。注意，这里的术语与上面略有不同。<code>Scheme</code> 枚举可以存储普通单态类型(用于函数参数和递归变量)或多态类型方案(用于 let 绑定变量)。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">Poly(Rc&lt;dyn Fn(&amp;</span><span style="color:#b48ead;">mut</span><span style="color:#c0c5ce;"> TypeCheckerCore) -&gt; Result&lt;Value&gt;&gt;),
+</span></code></pre>
+<p>在后一种情况下，枚举存储了闭包对象，它可以被调用来根据需求标记新类型。它接收对类型检查核心的引用，使用它来创建任何适用的新类型变量，并返回新单态类型。</p>
+<p>接下来，我们要更新 AST 中处理 <code>Variable</code> 节点的代码。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">Variable((name, span)) =&gt; {
+    </span><span style="color:#b48ead;">if let </span><span style="color:#c0c5ce;">Some(scheme) = bindings.</span><span style="color:#96b5b4;">get</span><span style="color:#c0c5ce;">(name.</span><span style="color:#96b5b4;">as_str</span><span style="color:#c0c5ce;">()) {
+        </span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> scheme {
+            Scheme::Mono(v) =&gt; Ok(*v),
+            Scheme::Poly(cb) =&gt; </span><span style="color:#96b5b4;">cb</span><span style="color:#c0c5ce;">(engine),
+        }
+    } </span><span style="color:#b48ead;">else </span><span style="color:#c0c5ce;">{
+        Err(SyntaxError::new1(format!(&quot;</span><span style="color:#a3be8c;">SyntaxError: Undefined variable </span><span style="color:#d08770;">{}</span><span style="color:#c0c5ce;">&quot;, name), *span))
+    }
+}
+</span></code></pre>
+<p>之前，我们只是在绑定映射中查找类型，现在在绑定映射中查找 <code>Scheme</code> 枚举。如果它包含一个类型，就使用它，否则我们调用包含的闭包来生成新类型。</p>
+<h3 id="tui-dao-lei-xing-fang-an">推导类型方案</h3>
+<p>说完了这些，是时候实际创建一些类型方案了。记得之前，<code>Let</code> 处理代码在处理 <code>let</code> 表达式和顶层 <code>let</code> 定义之间是重复的。由于将对它进行更复杂的修改，我已经提前将它重构为 <code>check_let</code> 函数，以避免重复。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">Let((name, var_expr), rest_expr) =&gt; {
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> var_scheme = </span><span style="color:#96b5b4;">check_let</span><span style="color:#c0c5ce;">(engine, bindings, var_expr)?;
+    bindings.</span><span style="color:#96b5b4;">in_child_scope</span><span style="color:#c0c5ce;">(|</span><span style="color:#bf616a;">bindings</span><span style="color:#c0c5ce;">| {
+        bindings.</span><span style="color:#96b5b4;">insert_scheme</span><span style="color:#c0c5ce;">(name.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">(), var_scheme);
+        </span><span style="color:#96b5b4;">check_expr</span><span style="color:#c0c5ce;">(engine, bindings, rest_expr)
+    })
+}
+</span></code></pre>
+<p>现在到了有趣的部分 - <code>check_let</code> 本身。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#b48ead;">fn </span><span style="color:#8fa1b3;">check_let</span><span style="color:#c0c5ce;">(</span><span style="color:#bf616a;">engine</span><span style="color:#c0c5ce;">: &amp;</span><span style="color:#b48ead;">mut</span><span style="color:#c0c5ce;"> TypeCheckerCore, </span><span style="color:#bf616a;">bindings</span><span style="color:#c0c5ce;">: &amp;</span><span style="color:#b48ead;">mut</span><span style="color:#c0c5ce;"> Bindings, </span><span style="color:#bf616a;">expr</span><span style="color:#c0c5ce;">: &amp;ast::Expr) -&gt; Result&lt;Scheme&gt; {
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> saved_bindings = RefCell::new(Bindings {
+        m: bindings.m.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">(),
+        changes: Vec::new(),
+    });
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> saved_expr = expr.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">();
+
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> f: Rc&lt;dyn Fn(&amp;</span><span style="color:#b48ead;">mut</span><span style="color:#c0c5ce;"> TypeCheckerCore) -&gt; Result&lt;Value&gt;&gt; =
+        Rc::new(</span><span style="color:#b48ead;">move </span><span style="color:#c0c5ce;">|engine| </span><span style="color:#96b5b4;">check_expr</span><span style="color:#c0c5ce;">(engine, &amp;</span><span style="color:#b48ead;">mut</span><span style="color:#c0c5ce;"> saved_bindings.</span><span style="color:#96b5b4;">borrow_mut</span><span style="color:#c0c5ce;">(), &amp;saved_expr));
+
+    </span><span style="color:#96b5b4;">f</span><span style="color:#c0c5ce;">(engine)?;
+    Ok(Scheme::Poly(f))
+}
+</span></code></pre>
+<p>这看起来可能有点吓人，但它所做的就是创建一个闭包，对给定的 <code>Expr</code> 进行类型检查，并返回结果类型。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> saved_bindings = RefCell::new(Bindings {
+    m: bindings.m.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">(),
+    changes: Vec::new(),
+});
+</span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> saved_expr = expr.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">();
+</span></code></pre>
+<p>首先，我们需要复制类型环境和 ast 子树，这样就可以在闭包中存储它们。这并不是严格必须的。可以通过在代码的其他地方做一些改动来消除 AST 副本和大部分绑定副本，但现在我们要采用真正的懒惰实现方法来最小化所需的代码改动。(不过必须将 AST 节点类型标记为可克隆。如果不这样做，会导致 Rust 中出现一个非常混乱的编译器错误，所以要注意这一点。)</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> f: Rc&lt;dyn Fn(&amp;</span><span style="color:#b48ead;">mut</span><span style="color:#c0c5ce;"> TypeCheckerCore) -&gt; Result&lt;Value&gt;&gt; =
+    Rc::new(</span><span style="color:#b48ead;">move </span><span style="color:#c0c5ce;">|engine| </span><span style="color:#96b5b4;">check_expr</span><span style="color:#c0c5ce;">(engine, &amp;</span><span style="color:#b48ead;">mut</span><span style="color:#c0c5ce;"> saved_bindings.</span><span style="color:#96b5b4;">borrow_mut</span><span style="color:#c0c5ce;">(), &amp;saved_expr));
+</span></code></pre>
+<p>之后，只需创建闭包对象。遗憾的是，Rust 在这里需要一个明确的类型注释。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#96b5b4;">f</span><span style="color:#c0c5ce;">(engine)?;
+Ok(Scheme::Poly(f))
+</span></code></pre>
+<p>最后，调用闭包，然后返回一个包含闭包的 <code>Scheme</code>。第一点有点微妙。回顾一下，我们目前的实现基本上只是在变量被引用时对 <code>let</code> 定义的主体进行类型检查。然而，cubiml 有<em>严格</em>的执行语义，意味着我们需要对定义进行至少一次类型检查，即使变量从未被引用。</p>
+<p>例如，考虑以下代码。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#b48ead;">let </span><span style="color:#bf616a;">x </span><span style="color:#c0c5ce;">= </span><span style="color:#d08770;">false </span><span style="color:#c0c5ce;">+ </span><span style="color:#d08770;">34 </span><span style="color:#b48ead;">in
+    </span><span style="color:#c0c5ce;">&quot;</span><span style="color:#a3be8c;">hello, world!</span><span style="color:#c0c5ce;">&quot;;
+</span></code></pre>
+<p>如果没有上面额外的 <code>f(engine)?</code> 调用，错误的 <code>false + 34</code> 相加将通过类型检查器而不是返回错误，因为变量 <code>x</code> 从未被引用，因此它的方案回调从未被调用。</p>
+<p>需要注意的是，如果你事先在单独的通道中进行变量解析(这是个好主意)，你可以通过在变量解析过程中标记(甚至优化掉)未使用的变量来消除这个检查的需要。</p>
+<h3 id="zhi-xian-zhi">值限制</h3>
+<p>遗憾的是，我们还没有完全完成。上面的代码大部分是可行的，但与可变结合起来就不健全了。考虑下面的例子。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#b48ead;">let </span><span style="color:#bf616a;">p </span><span style="color:#c0c5ce;">= </span><span style="color:#b48ead;">ref </span><span style="color:#c0c5ce;">(</span><span style="color:#b48ead;">fun </span><span style="color:#bf616a;">x </span><span style="color:#c0c5ce;">-&gt; x);
+</span><span style="color:#65737e;">(* 42 是可调用的函数，对吧？ *)
+</span><span style="color:#c0c5ce;">p := </span><span style="color:#d08770;">42</span><span style="color:#c0c5ce;">;
+!p &quot;</span><span style="color:#a3be8c;">arg</span><span style="color:#c0c5ce;">&quot;
+</span></code></pre>
+<p>这个例子错误地通过了类型检查器，并在运行时崩溃。</p>
+<pre style="background-color:#2b303b;">
+<code><span style="color:#c0c5ce;">An error occurred during evaluation in the repl: TypeError: $.v0.$p is not a function
+</span></code></pre>
+<p><a href="/blog/subtype-inference-by-example-part-11-the-value-restriction/">下周</a>，我们将看到如何使用<em>值限制</em>来解决这个问题。</p>
+
+    </div>
+
+
+</article>
+
+
+        </main>
+        <footer>
+            <p>
+                © 2021 firecodelab.com
+            </p>
+            <p>
+                
+                
+            </p>
+        </footer>
+    </div>
+</body>
+</html>

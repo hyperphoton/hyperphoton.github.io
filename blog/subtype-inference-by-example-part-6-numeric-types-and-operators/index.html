@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="zh-cn">
+<head>
+    <meta charset="utf-8">
+    <meta name="HandheldFriendly" content="True">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="referrer" content="no-referrer-when-downgrade">
+
+    <title>[译]通过例子学子类型推理（六）：数字类型和运算符</title>
+    <meta name="description" content="">
+
+    <link rel="stylesheet" href="https:&#x2F;&#x2F;firecodelab.com&#x2F;main.css">
+
+    
+
+    
+    
+</head>
+<body>
+    <a class="skip-main" href="#main">Skip to content</a>
+    <div class="container">
+        <header>
+            <h1 class="site-header">
+                <a href="https:&#x2F;&#x2F;firecodelab.com">Fire Code</a>
+            </h1>
+            <nav>
+                
+                
+                
+                <a  href="&#x2F;blog&#x2F;">博客</a>
+                
+                
+                <a  href="&#x2F;about&#x2F;">关于</a>
+                
+                
+            </nav>
+        </header>
+        <main id="main" tabindex="-1">
+            
+
+<article class="post">
+    <header>
+        <h1>[译]通过例子学子类型推理（六）：数字类型和运算符</h1>
+    </header>
+
+    
+    <div class="article-info">
+        
+        <div class="article-date">2021-04-06</div>
+        
+        <div class="article-taxonomies">
+            
+                <ul class="article-tags">
+                    
+                    <li><a href="https://firecodelab.com/tags/translate/">#translate</a></li>
+                    
+                    <li><a href="https://firecodelab.com/tags/compiler/">#compiler</a></li>
+                    
+                    <li><a href="https://firecodelab.com/tags/type-inference/">#type inference</a></li>
+                    
+                </ul>
+            
+        </div>
+        
+        <div class="article-original">[<a href="https:&#x2F;&#x2F;blog.polybdenum.com&#x2F;2020&#x2F;08&#x2F;08&#x2F;subtype-inference-by-example-part-6-numeric-types-and-operators.html" target="_blank">view original</a>]</div>
+        
+    </div>
+
+
+    <div class="content">
+        <p><a href="/blog/subtype-inference-by-example-part-5-incremental-reachability">上周</a>，我们以语言 <a href="https://github.com/Storyyeller/cubiml-demo"><code>cubiml</code></a> 为例，完成了对如何实现<em>立方双合一</em>类型推理算法的讲解。不过，为了保持初始教程的精简和易懂，cubiml 的初始版本非常简陋。今天我们将开始扩展 cubiml 的新功能，使其更加实用和有趣。我们将从简单的开始，为语言（和类型系统）添加整数、浮点数和字符串字面量，以及使用它们的操作符。</p>
+<h2 id="she-ji-shu-zi">设计数字</h2>
+<p>在开始之前，我们必须决定要实现<em>什么</em>。在现有的编程语言中，数字类型和运算符的工作方式存在巨大的差异，它们的混乱和便利性、严格性和灵活性，以及对类型推理的冗长和顺从性都各不相同。</p>
+<h3 id="int-yu-i32">Int 与 i32</h3>
+<p>第一个问题是支持哪种数字类型。许多老式的和/或低级的编程语言都支持固定宽度的整数类型，因为它们很容易在编译器中实现。如果对固定宽度的整数进行操作，产生的结果不符合所选择的宽度，它就会被默默地截断，甚至更糟糕的是，产生未定义的行为。这个<em>整数溢出</em>问题导致了这类语言中非常常见的一类错误。</p>
+<p>因此，cubiml 提供了单一的、任意精度的整数类型，这使得语言更简单、更容易理解，并大大降低了发生 bug 的可能性。对于这种方法，主要有两个反驳的理由。</p>
+<p>第一，在固定宽度整数运算所引起的模运算是程序逻辑中所需要的部分的情况下，它可以导致更短的代码。然而，由此产生的代码容易出错，而且难以阅读，无论如何，让你的语言语义由 50 年前对编译器实现者方便的东西来定义是没有意义的。保持模运算和截断在极少数情况下期望的明确性要好得多。</p>
+<p>更合理的抱怨是，任意精度的整数很难优化，默认情况下提供的性能很差。这对于 cubiml 来说不是问题，因为它是编译成 JavaScript 的，但是对于强调性能的低级语言来说，这可能是个问题。</p>
+<p>对于这样的语言，我建议在语言规范中保留整数作为数学（任意精度）整数，并简单地要求程序员在必要时插入显式封装指令和/或注释，这样每个整数变量都被静态地知道只持有可以在底层机器存储中有效表示的值。这不仅简化了语言，还保证了用户考虑到整数溢出可能发生的时间和地点，以及如何恰当地处理，消除了一大类错误。</p>
+<h3 id="yun-suan-fu">运算符</h3>
+<p>接下来的问题是运算符的设计。用户可以定义它们吗？它们只是对象上的特殊命名方法，还是全局函数，或者是编译器固有的？在后两种情况下，它们的类型签名应该是什么？</p>
+<p>用户定义的运算符语义在动态语言中很好用，因为在动态语言中，所有的东西都只是对象上的方法，但在静态类型的语言中，由于编译器中如何确定源代码中任何给定的运算符应该代表什么代码的问题，它就不那么好用了。一种方法是显式地传递要使用的函数列表。这是很啰嗦的，所以语言通常提供了一种隐式传递函数列表的方法，就像 Haskell 的类型类或 Scala 的 givens 一样。然而，这极大地使语言复杂化了，所以我们在 cubiml 中暂时避开它。</p>
+<p>为了教学目的，cubiml 保持简单，整型、浮点型和字符串在类型系统中作为原始类型来实现（就像已经对布尔型做的那样），而运算符是在编译器中处理的内在类型，而不是在库代码中。然而，这仍然留下了每个运算符应该接收和产生什么类型的问题。</p>
+<h3 id="yun-suan-fu-lei-xing-qian-ming">运算符类型签名</h3>
+<p>最简单的要实现的类型是接收并产生单一、特定类型的运算符。例如，你可以有类型签名为 <code>(int, int) -&gt; bool</code> 的整数比较运算符。同样，你可以有整数加法运算符 <code>(int, int) -&gt; int</code>。因为这很容易实现，而且不需要在类型系统中添加任何新概念，所以在 cubiml 中我们将暂时采用这种方法。</p>
+<p>有了特定类型的操作符，就必须为每个类型使用不同的操作符。例如，在许多流行的语言中，整数加法、浮点加法<em>和</em>字符串连接都使用 <code>+</code> 运算符。在 cubiml 中，我们遵循 OCaml 的方法，通过给浮点运算符添加一个句号来消除运算符的歧义。这意味着 <code>+</code> 保留给整数加法，而 <code>+.</code> 必须用于浮点加法(在OCaml中字符串连接是 <code>^</code>)。这种方法显然只有在数字类型相对较少的情况下才行得通 - 如果你的语言有通常的大小不一、符号不一的固定宽度的整数，这种方法就完全行不通了，不过话说回来，我认为一开始有这些类型是个坏主意。</p>
+<p>按照实现难度和复杂度递增的顺序，接下来是可以接收多个类型值的运算符，包括不同类型的值。例如，我们不需要类型为 <code>(int, int) -&gt; bool</code> 的整数比较运算符 <code>&gt;</code>，也不需要类型为 <code>(float, float) -&gt; bool</code> 的浮点比较运算符 <code>&gt;.</code>，我们可以用单一的比较运算符来让你自由比较整数和浮点数，类型为 <code>(int | float, int | float) -&gt; bool</code>，其中 <code>|</code> 是类型联合。这只需要对类型检查器稍作修改就可以实现，但它需要修改类型检查器，并且增加了复杂性，所以我避免了它，暂时将比较运算符分开。</p>
+<p>注意，这只适用于产生固定结果类型的运算符。理论上，你可以按照这种方法，用 <code>(int | float, int | float) -&gt; int | float</code> 这样的类型来做一个通用的加法运算符，但这并没有任何意义，而且 <code>int | float</code> 的结果值几乎没有用。同时注意，类型签名 <code>(int | float, int | float) -&gt; bool</code> 允许你比较整数和浮点数。如果你想限制运算符，使它只能比较整数和整数，以及浮点数和浮点数，那么类型签名将是 <code>((int, int) -&gt; bool) &amp; (((float, float) -&gt; bool)</code>，一个复杂得多的野兽。同样，假设的加法/连接组合 <code>+</code> 运算符将需要有类型签名 <code>((int, int) -&gt; int) &amp; (((float, float) -&gt; float) &amp; (((string, string) -&gt; string)</code>。这将我们带入特设多态。</p>
+<h3 id="te-she-duo-tai">特设多态</h3>
+<p>目前为止，我们所做的一切都基于<em>参数多态</em>。这种代码重用的方法包括找到一个接口（或者让编译器帮你计算），它代表了对函数输入的要求，然后编写函数代码只使用这个接口，使任何兼容该接口的类型可以代码重用。</p>
+<p>多态的另一种形式，<em>特设多态</em>，指的是只能与特定列举的类型列表一起使用的代码。这是 C++ 和 Java 等语言中传统的方法重载的结果，例如，你可以定义一个接收整数的方法 <code>foo</code>，另外定义一个接收浮点数的 <code>foo</code> 方法，然后你可以在整数和浮点数上调用 <code>foo</code>，但不能是其他类型。不幸的是，特设多态除了从用户的角度来看是脆弱和不可维护的之外，还对类型推理造成了破坏。</p>
+<p>特设多态可以表达几乎任意的约束，这与使全局类型推理起作用的所有事物背道而驰。相对于传播流边和类型并迭代直到收敛来为表达式找到单一的最通用类型，编译器必须要解决一个任意的约束系统，这通常是无法确定的。例如，我们之前看到，相等约束和子类型的结合使得类型推理在一般情况下是不可确定的，但这里讨论的特设多态的整个要点就是支持相等约束。</p>
+<p>也就是说，我相信可以处理这种特殊情况，并将其塞进当前的类型检查器设计中。原因是这里不需要<em>任意的</em>相等约束，只需要基本类型的相等，这可以通过要求所有流向给定用法的值共享同一个类型构造器头来表达。(<em>递归</em>相等约束，它可以到达类型构造器内部来强制组件类型之间相等，这将使类型推理无法确定)。</p>
+<p>然而，这样做是一个可怕的 hack，违背了系统设计之下的所有原则。事实上，它是如此的丑陋，以至于我将在这里继续概述它，而不是将它保存在未来的文章中，因为我没有任何计划在 cubiml 中实现它。诀窍是在图中添加一个使用头节点的新类型，其头是<em>可变的</em>。每当一个值头流向该使用头并调用 <code>check_heads</code> 时，我们就会将值类型构造器存储在使用头的可变存储中。然后，如果它与之前流向该头的任何类型构造器不同，我们可以抛出一个类型错误。</p>
+<h3 id="xiang-deng-yun-suan-fu">相等运算符</h3>
+<p>在 cubiml 中，相等运算符 <code>==</code> 和 <code>!=</code> 可以用于任何类型的操作数，甚至是两种不同类型的操作数。与 <code>&lt;</code>、<code>+</code> 等不同的是，能够在对象、函数等上使用它们很有用。一些语言强制两个操作数必须具有<em>相等</em>类型的额外限制，但如上所述，这与子类型推理是不兼容的。此外，一开始这就是个可疑的决定，因为比较不相关类型的值仍然有意义（它们是不等的），如果你试图使类型系统更精确，过度热衷的限制会引起问题。例如，你可能想在类型系统中跟踪常量值，给整型常量一个特殊的类型，它是一般整型的子类型。然而，在这种情况下，你仍然希望能够将整型变量与常量进行比较!</p>
+<h2 id="shi-xian">实现</h2>
+<p>所有的理论都讲完了，是时候真正实现新的类型、字面量和操作符了。</p>
+<h3 id="zeng-jia-ji-ben-lei-xing">增加基本类型</h3>
+<p>至于类型系统，唯一的变化是增加了三个新的基本类型：整型、浮点型和字符串。由于这些都是基本类型，所以实现方式与布尔型完全相同，所需的改变简单明了。</p>
+<p>首先添加头构造器。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;"> #[</span><span style="color:#bf616a;">derive</span><span style="color:#c0c5ce;">(Debug, Clone)]
+ </span><span style="color:#b48ead;">enum </span><span style="color:#c0c5ce;">VTypeHead {
+     VBool,
++    VFloat,
++    VInt,
++    VStr,
+     VFunc { arg: Use, ret: Value },
+     VObj { fields: HashMap&lt;String, Value&gt; },
+     VCase { case: (String, Value) },
+</span></code></pre><pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;"> #[</span><span style="color:#bf616a;">derive</span><span style="color:#c0c5ce;">(Debug, Clone)]
+ </span><span style="color:#b48ead;">enum </span><span style="color:#c0c5ce;">UTypeHead {
+     UBool,
++    UFloat,
++    UInt,
++    UStr,
+     UFunc { arg: Value, ret: Use },
+     UObj { field: (String, Use) },
+     UCase { cases: HashMap&lt;String, Use&gt; },
+</span></code></pre>
+<p>接下来，在 <code>check_heads</code> 函数中处理它们。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">     </span><span style="color:#b48ead;">match </span><span style="color:#c0c5ce;">(lhs, rhs) {
+         (&amp;VBool, &amp;UBool) =&gt; Ok(()),
++        (&amp;VFloat, &amp;UFloat) =&gt; Ok(()),
++        (&amp;VInt, &amp;UInt) =&gt; Ok(()),
++        (&amp;VStr, &amp;UStr) =&gt; Ok(()),
++
+         (&amp;VFunc { arg: arg1, ret: ret1 }, &amp;UFunc { arg: arg2, ret: ret2 }) =&gt; {
+             out.</span><span style="color:#96b5b4;">push</span><span style="color:#c0c5ce;">((ret1, ret2));
+             </span><span style="color:#65737e;">// flip the order since arguments are contravariant
+
+</span></code></pre>
+<p>最后，添加公共构造器方法。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">     </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">bool</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">) -&gt; Value {
+         </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">new_val</span><span style="color:#c0c5ce;">(VTypeHead::VBool)
+     }
++    </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">float</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">) -&gt; Value {
++        </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">new_val</span><span style="color:#c0c5ce;">(VTypeHead::VFloat)
++    }
++    </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">int</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">) -&gt; Value {
++        </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">new_val</span><span style="color:#c0c5ce;">(VTypeHead::VInt)
++    }
++    </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">str</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">) -&gt; Value {
++        </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">new_val</span><span style="color:#c0c5ce;">(VTypeHead::VStr)
++    }
++
+     </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">bool_use</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">) -&gt; Use {
+         </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">new_use</span><span style="color:#c0c5ce;">(UTypeHead::UBool)
+     }
++    </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">float_use</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">) -&gt; Use {
++        </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">new_use</span><span style="color:#c0c5ce;">(UTypeHead::UFloat)
++    }
++    </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">int_use</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">) -&gt; Use {
++        </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">new_use</span><span style="color:#c0c5ce;">(UTypeHead::UInt)
++    }
++    </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">str_use</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">) -&gt; Use {
++        </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">new_use</span><span style="color:#c0c5ce;">(UTypeHead::UStr)
++    }
+
+     </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">func</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">arg</span><span style="color:#c0c5ce;">: Use, </span><span style="color:#bf616a;">ret</span><span style="color:#c0c5ce;">: Value) -&gt; Value {
+         </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">new_val</span><span style="color:#c0c5ce;">(VTypeHead::VFunc { arg, ret })
+</span></code></pre><h3 id="zi-mian-liang">字面量</h3>
+<p>下一步是给语言添加字面量。首先将它们添加到 AST 中。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;"> #[</span><span style="color:#bf616a;">derive</span><span style="color:#c0c5ce;">(Debug)]
+ </span><span style="color:#b48ead;">pub enum </span><span style="color:#c0c5ce;">Literal {
+-    Bool(</span><span style="color:#b48ead;">bool</span><span style="color:#c0c5ce;">),
++    Bool,
++    Float,
++    Int,
++    Str,
+ }
+
+ </span><span style="color:#b48ead;">type </span><span style="color:#c0c5ce;">VarDefinition = (String, Box&lt;Expr&gt;);
+</span></code></pre>
+<p>以前，我们解析布尔字面量，并将字面量值作为 <code>bool</code> 存储在 <code>ast::Literal</code> 枚举中。然而对于新的字面量类型，解析和序列化它们需要一堆复杂的逻辑，而实际上并不需要。由于类型检查器并不关心字面量值，所以我们只将字面量值表示为源代码的 <code>String</code>，并原封不动地传递给代码生成。这样做也避免了需要添加对大数库的依赖来表示整数字面量值。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">     If(Box&lt;Expr&gt;, Box&lt;Expr&gt;, Box&lt;Expr&gt;),
+     Let(VarDefinition, Box&lt;Expr&gt;),
+     LetRec(Vec&lt;VarDefinition&gt;, Box&lt;Expr&gt;),
+-    Literal(Literal),
++    Literal(Literal, String),
+     Match(Box&lt;Expr&gt;, Vec&lt;(CaseMatchPattern, Box&lt;Expr&gt;)&gt;),
+     Record(Vec&lt;(String, Box&lt;Expr&gt;)&gt;),
+     Variable(String),
+</span></code></pre>
+<p>由于现在无论类型如何所有的字面量值都以同样的方式表示（<code>String</code>），我们也将它们移到 <code>ast::Literal</code> 枚举之外，直接存储在 <code>ast::Expr::Literal</code> 变体中。很羞愧我没有在 cubiml 上进一步努力，这样就可以避免做出这样的让我看起来很愚蠢的以后不得不撤销的设计决定，但这就是软件工程师的生活。</p>
+<h4 id="yu-fa">语法</h4>
+<p>接下来，我们在解析器中添加字面量，这主要包括编写一堆巨大的正则表达式。这里与 OCaml 的字面量语法有一些小的不同 - 我们不允许额外的前导零，浮点字面量需要小数点，即使指定了指数（需要写成 <code>1.e3</code> 或 <code>1.0e3</code> 而不是 <code>1e3</code>）。</p>
+<p>最后，我们将负数字面量的减号视为字面量本身的一部分，而不是像大多数语言那样，将一元减号应用于正数字面量。这极大地简化了代码，但代价是偶尔会导致对模糊语法的反直觉行为。例如，<code>5-3</code> 将被解析为无意义的功能调用 <code>5 (-3)</code> 而不是预期的 <code>5 - 3</code> ，因为 <code>-3</code> 是一个有效的标识。这主要是使用函数式函数调用(<code>func arg</code>)的结果，其参数周围没有括号会给语法带来很多歧义和混乱，而对于更传统的语法来说，这基本上不是问题。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;"> Ident: String = &lt;r</span><span style="background-color:#bf616a;color:#2b303b;">&quot;</span><span style="color:#c0c5ce;">[a-z_]\w*&quot;</span><span style="color:#a3be8c;">&gt; =&gt; String::from(&lt;&gt;);
+ Tag: String = &lt;r</span><span style="color:#c0c5ce;">&quot;`[A-Z]\w*&quot;</span><span style="color:#a3be8c;">&gt; =&gt; String::from(&lt;&gt;);
+
++IntLiteral: String = &lt;r</span><span style="color:#c0c5ce;">&quot;-?(?:</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">|[</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">-</span><span style="color:#d08770;">9</span><span style="color:#c0c5ce;">][[:digit:]]*)&quot;</span><span style="color:#a3be8c;">&gt; =&gt; String::from(&lt;&gt;);
++FloatLiteral: String =
++    &lt;r</span><span style="color:#c0c5ce;">&quot;-?(?:</span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">|[</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">-</span><span style="color:#d08770;">9</span><span style="color:#c0c5ce;">][[:digit:]]*)\.[[:digit:]]*(?:[eE]-?[[:digit:]]+)?&quot;</span><span style="color:#a3be8c;">&gt; =&gt; String::from(&lt;&gt;);
++StringLiteral: String =
++    &lt;r#</span><span style="color:#c0c5ce;">&quot;&quot;</span><span style="color:#a3be8c;">[^</span><span style="color:#96b5b4;">\\</span><span style="color:#c0c5ce;">&quot;]*(?:\\[tn&#39;&quot;</span><span style="color:#96b5b4;">\\</span><span style="color:#a3be8c;">][^</span><span style="color:#96b5b4;">\\</span><span style="color:#c0c5ce;">&quot;]*)*&quot;&quot;#&gt; =&gt; String::from(&lt;&gt;);
+</span></code></pre><pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;"> VarOrLiteral: Box&lt;ast::Expr&gt; = {
+     Ident =&gt; Box::new(
+         </span><span style="color:#b48ead;">match </span><span style="color:#c0c5ce;">&lt;&gt;.</span><span style="color:#96b5b4;">as_str</span><span style="color:#c0c5ce;">() {
+-            &quot;</span><span style="color:#a3be8c;">true</span><span style="color:#c0c5ce;">&quot; =&gt; ast::Expr::Literal(ast::Literal::Bool(</span><span style="color:#d08770;">true</span><span style="color:#c0c5ce;">)),
+-            &quot;</span><span style="color:#a3be8c;">false</span><span style="color:#c0c5ce;">&quot; =&gt; ast::Expr::Literal(ast::Literal::Bool(</span><span style="color:#d08770;">false</span><span style="color:#c0c5ce;">)),
++            &quot;</span><span style="color:#a3be8c;">false</span><span style="color:#c0c5ce;">&quot; | &quot;</span><span style="color:#a3be8c;">true</span><span style="color:#c0c5ce;">&quot; =&gt; ast::Expr::Literal(ast::Literal::Bool, &lt;&gt;),
+             _ =&gt; ast::Expr::Variable(&lt;&gt;)
+         }
+     ),
++
++    FloatLiteral =&gt; Box::new(ast::Expr::Literal(ast::Literal::Float, &lt;&gt;)),
++    IntLiteral =&gt; Box::new(ast::Expr::Literal(ast::Literal::Int, &lt;&gt;)),
++    StringLiteral =&gt; Box::new(ast::Expr::Literal(ast::Literal::Str, &lt;&gt;)),
+ }
+
+ If: Box&lt;ast::Expr&gt; = {
+</span></code></pre><h4 id="qian-duan">前端</h4>
+<p>最后一步是在类型检查器前端中添加字面量支持。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">             </span><span style="color:#96b5b4;">check_expr</span><span style="color:#c0c5ce;">(engine, bindings, rest_expr)
+         }),
+-        Literal(val) =&gt; {
++        Literal(type_, code) =&gt; {
+             </span><span style="color:#b48ead;">use </span><span style="color:#c0c5ce;">ast::Literal::*;
+-            Ok(</span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> val {
+-                Bool(_) =&gt; engine.</span><span style="color:#b48ead;">bool</span><span style="color:#c0c5ce;">(),
++            Ok(</span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> type_ {
++                Bool =&gt; engine.</span><span style="color:#b48ead;">bool</span><span style="color:#c0c5ce;">(),
++                Float =&gt; engine.</span><span style="color:#96b5b4;">float</span><span style="color:#c0c5ce;">(),
++                Int =&gt; engine.</span><span style="color:#96b5b4;">int</span><span style="color:#c0c5ce;">(),
++                Str =&gt; engine.</span><span style="color:#b48ead;">str</span><span style="color:#c0c5ce;">(),
+             })
+         }
+         Match(match_expr, cases) =&gt; {
+</span></code></pre><h3 id="yun-suan-fu-1">运算符</h3>
+<p>现在我们在语言中拥有整型、浮点型和字符串字面量，但对它们没做操作。是时候添加一些运算符了。我们将为整型数学添加 <code>+</code>、<code>-</code>、<code>*</code> 和 <code>/</code> 运算符，为整型比较添加 <code>&lt;</code>、<code>&lt;=</code>、<code>&gt;</code> 和 <code>&gt;=</code>。对于浮点数，我们遵循 OCaml 的做法，使用不同的都以 <code>.</code> 为后缀（<code>+.</code>、<code>*.</code>、<code>&gt;=.</code> 等）的运算符集。最后，是字符串连接运算符 <code>^</code> 和通用相等运算符 <code>==</code> 和 <code>！=</code>。</p>
+<p>像往常一样，第一步是扩展 AST。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">     Str,
+ }
+
++#[</span><span style="color:#bf616a;">derive</span><span style="color:#c0c5ce;">(Debug)]
++</span><span style="color:#b48ead;">pub enum </span><span style="color:#c0c5ce;">Op {
++    Add,
++    Sub,
++    Mult,
++    Div,
++
++    Lt,
++    Lte,
++    Gt,
++    Gte,
++
++    Eq,
++    Neq,
++}
++
++#[</span><span style="color:#bf616a;">derive</span><span style="color:#c0c5ce;">(Debug)]
++</span><span style="color:#b48ead;">pub enum </span><span style="color:#c0c5ce;">OpType {
++    IntOp,
++    FloatOp,
++    StrOp,
++
++    IntCmp,
++    FloatCmp,
++    AnyCmp,
++}
++
+ </span><span style="color:#b48ead;">type </span><span style="color:#c0c5ce;">VarDefinition = (String, Box&lt;Expr&gt;);
+ </span><span style="color:#b48ead;">type </span><span style="color:#c0c5ce;">CaseMatchPattern = (String, String);
+
+ #[</span><span style="color:#bf616a;">derive</span><span style="color:#c0c5ce;">(Debug)]
+ </span><span style="color:#b48ead;">pub enum </span><span style="color:#c0c5ce;">Expr {
++    BinOp(Box&lt;Expr&gt;, Box&lt;Expr&gt;, OpType, Op),
+     Call(Box&lt;Expr&gt;, Box&lt;Expr&gt;),
+     Case(String, Box&lt;Expr&gt;),
+     FieldAccess(Box&lt;Expr&gt;, String),
+</span></code></pre>
+<p>新的 <code>BinOp</code> AST 节点类型有两个额外的字段 - <code>OpType</code> 和 <code>Op</code>。<code>OpType</code> 提供了操作的类型签名，而 <code>Op</code> 则跟踪它是哪种操作，忽略类型。这样拆分很方便，因为类型检查器只需要前者，而代码生成只需要担心后者。</p>
+<p>接下来，将新的操作符添加到语言语法中。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">+MultOp: Box&lt;ast::Expr&gt; = {
++    &lt;MultExpr&gt; &quot;</span><span style="color:#a3be8c;">*</span><span style="color:#c0c5ce;">&quot; &lt;CallExpr&gt; =&gt; Box::new(ast::Expr::BinOp(&lt;&gt;, ast::OpType::IntOp, ast::Op::Mult)),
++    &lt;MultExpr&gt; &quot;</span><span style="color:#a3be8c;">/</span><span style="color:#c0c5ce;">&quot; &lt;CallExpr&gt; =&gt; Box::new(ast::Expr::BinOp(&lt;&gt;, ast::OpType::IntOp, ast::Op::Div)),
++    &lt;MultExpr&gt; &quot;</span><span style="color:#a3be8c;">*.</span><span style="color:#c0c5ce;">&quot; &lt;CallExpr&gt; =&gt; Box::new(ast::Expr::BinOp(&lt;&gt;, ast::OpType::FloatOp, ast::Op::Mult)),
++    &lt;MultExpr&gt; &quot;</span><span style="color:#a3be8c;">/.</span><span style="color:#c0c5ce;">&quot; &lt;CallExpr&gt; =&gt; Box::new(ast::Expr::BinOp(&lt;&gt;, ast::OpType::FloatOp, ast::Op::Div)),
++}
++AddOp: Box&lt;ast::Expr&gt; = {
++    &lt;AddExpr&gt; &quot;</span><span style="color:#a3be8c;">+</span><span style="color:#c0c5ce;">&quot; &lt;MultExpr&gt; =&gt; Box::new(ast::Expr::BinOp(&lt;&gt;, ast::OpType::IntOp, ast::Op::Add)),
++    &lt;AddExpr&gt; &quot;</span><span style="color:#a3be8c;">-</span><span style="color:#c0c5ce;">&quot; &lt;MultExpr&gt; =&gt; Box::new(ast::Expr::BinOp(&lt;&gt;, ast::OpType::IntOp, ast::Op::Sub)),
++    &lt;AddExpr&gt; &quot;</span><span style="color:#a3be8c;">+.</span><span style="color:#c0c5ce;">&quot; &lt;MultExpr&gt; =&gt; Box::new(ast::Expr::BinOp(&lt;&gt;, ast::OpType::FloatOp, ast::Op::Add)),
++    &lt;AddExpr&gt; &quot;</span><span style="color:#a3be8c;">-.</span><span style="color:#c0c5ce;">&quot; &lt;MultExpr&gt; =&gt; Box::new(ast::Expr::BinOp(&lt;&gt;, ast::OpType::FloatOp, ast::Op::Sub)),
++    &lt;AddExpr&gt; &quot;</span><span style="color:#a3be8c;">^</span><span style="color:#c0c5ce;">&quot; &lt;MultExpr&gt; =&gt; Box::new(ast::Expr::BinOp(&lt;&gt;, ast::OpType::StrOp, ast::Op::Add)),
++}
++CmpOp: Box&lt;ast::Expr&gt; = {
++    &lt;AddExpr&gt; &quot;</span><span style="color:#a3be8c;">&lt;</span><span style="color:#c0c5ce;">&quot; &lt;AddExpr&gt; =&gt; Box::new(ast::Expr::BinOp(&lt;&gt;, ast::OpType::IntCmp, ast::Op::Lt)),
++    &lt;AddExpr&gt; &quot;</span><span style="color:#a3be8c;">&lt;=</span><span style="color:#c0c5ce;">&quot; &lt;AddExpr&gt; =&gt; Box::new(ast::Expr::BinOp(&lt;&gt;, ast::OpType::IntCmp, ast::Op::Lte)),
++    &lt;AddExpr&gt; &quot;</span><span style="color:#a3be8c;">&gt;</span><span style="color:#c0c5ce;">&quot; &lt;AddExpr&gt; =&gt; Box::new(ast::Expr::BinOp(&lt;&gt;, ast::OpType::IntCmp, ast::Op::Gt)),
++    &lt;AddExpr&gt; &quot;</span><span style="color:#a3be8c;">&gt;=</span><span style="color:#c0c5ce;">&quot; &lt;AddExpr&gt; =&gt; Box::new(ast::Expr::BinOp(&lt;&gt;, ast::OpType::IntCmp, ast::Op::Gte)),
++
++    &lt;AddExpr&gt; &quot;</span><span style="color:#a3be8c;">&lt;.</span><span style="color:#c0c5ce;">&quot; &lt;AddExpr&gt; =&gt; Box::new(ast::Expr::BinOp(&lt;&gt;, ast::OpType::FloatCmp, ast::Op::Lt)),
++    &lt;AddExpr&gt; &quot;</span><span style="color:#a3be8c;">&lt;=.</span><span style="color:#c0c5ce;">&quot; &lt;AddExpr&gt; =&gt; Box::new(ast::Expr::BinOp(&lt;&gt;, ast::OpType::FloatCmp, ast::Op::Lte)),
++    &lt;AddExpr&gt; &quot;</span><span style="color:#a3be8c;">&gt;.</span><span style="color:#c0c5ce;">&quot; &lt;AddExpr&gt; =&gt; Box::new(ast::Expr::BinOp(&lt;&gt;, ast::OpType::FloatCmp, ast::Op::Gt)),
++    &lt;AddExpr&gt; &quot;</span><span style="color:#a3be8c;">&gt;=.</span><span style="color:#c0c5ce;">&quot; &lt;AddExpr&gt; =&gt; Box::new(ast::Expr::BinOp(&lt;&gt;, ast::OpType::FloatCmp, ast::Op::Gte)),
++
++    &lt;AddExpr&gt; &quot;</span><span style="color:#a3be8c;">==</span><span style="color:#c0c5ce;">&quot; &lt;AddExpr&gt; =&gt; Box::new(ast::Expr::BinOp(&lt;&gt;, ast::OpType::AnyCmp, ast::Op::Eq)),
++    &lt;AddExpr&gt; &quot;</span><span style="color:#a3be8c;">!=</span><span style="color:#c0c5ce;">&quot; &lt;AddExpr&gt; =&gt; Box::new(ast::Expr::BinOp(&lt;&gt;, ast::OpType::AnyCmp, ast::Op::Neq)),
++}
+</span></code></pre>
+<p>运算符分为三个部分 - 乘法、加法和比较运算符。这使得我们可以将正确的优先规则编码到语法中。传统上，相等运算符的优先级低于关系运算符（<code>&lt;</code>，<code>&gt;=.</code> 等），但 OCaml 给予它们同样的优先级，所以我决定也这样做，以节省时间并简化语法。</p>
+<p>然而，通过使比较运算符不具有关联性，我们确实偏离了大多数语言的实践。(请注意，上面 <code>CmpOp</code> 规则的两个操作数都是 <code>AddOp</code>，这意味着不可能比较比较的结果)。在 JavaScript 和 OCaml 等语言中，<code>a &lt; b &lt; c</code> 是有效的语法，它被解析为 <code>(a &lt; b) &lt; c</code>，但这样的代码是无意义的，所以在 cubiml 中是不允许的。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">     CaseExpr,
+     Call,
+ }
+-Expr = {
++MultExpr = {
+     CallExpr,
++    MultOp,
++}
++AddExpr = {
++    MultExpr,
++    AddOp,
++}
++CompareExpr = {
++    AddExpr,
++    CmpOp,
++}
++Expr = {
++    CompareExpr,
+     FuncDef,
+     If,
+     Let,
+</span></code></pre>
+<p>最后，需要在类型检查器前端添加对 <code>BinOp</code> 节点的支持。这也是很简单直接的。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#c0c5ce;">BinOp(lhs_expr, rhs_expr, op_type, op) =&gt; {
+    </span><span style="color:#b48ead;">use </span><span style="color:#c0c5ce;">ast::OpType::*;
+
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> lhs_type = </span><span style="color:#96b5b4;">check_expr</span><span style="color:#c0c5ce;">(engine, bindings, lhs_expr)?;
+    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> rhs_type = </span><span style="color:#96b5b4;">check_expr</span><span style="color:#c0c5ce;">(engine, bindings, rhs_expr)?;
+
+    Ok(</span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> op_type {
+        IntOp =&gt; {
+            </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> bound = engine.</span><span style="color:#96b5b4;">int_use</span><span style="color:#c0c5ce;">();
+            engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(lhs_type, bound)?;
+            engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(rhs_type, bound)?;
+            engine.</span><span style="color:#96b5b4;">int</span><span style="color:#c0c5ce;">()
+        }
+        FloatOp =&gt; {
+            </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> bound = engine.</span><span style="color:#96b5b4;">float_use</span><span style="color:#c0c5ce;">();
+            engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(lhs_type, bound)?;
+            engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(rhs_type, bound)?;
+            engine.</span><span style="color:#96b5b4;">float</span><span style="color:#c0c5ce;">()
+        }
+        StrOp =&gt; {
+            </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> bound = engine.</span><span style="color:#96b5b4;">str_use</span><span style="color:#c0c5ce;">();
+            engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(lhs_type, bound)?;
+            engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(rhs_type, bound)?;
+            engine.</span><span style="color:#b48ead;">str</span><span style="color:#c0c5ce;">()
+        }
+        IntCmp =&gt; {
+            </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> bound = engine.</span><span style="color:#96b5b4;">int_use</span><span style="color:#c0c5ce;">();
+            engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(lhs_type, bound)?;
+            engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(rhs_type, bound)?;
+            engine.</span><span style="color:#b48ead;">bool</span><span style="color:#c0c5ce;">()
+        }
+        FloatCmp =&gt; {
+            </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> bound = engine.</span><span style="color:#96b5b4;">float_use</span><span style="color:#c0c5ce;">();
+            engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(lhs_type, bound)?;
+            engine.</span><span style="color:#96b5b4;">flow</span><span style="color:#c0c5ce;">(rhs_type, bound)?;
+            engine.</span><span style="color:#b48ead;">bool</span><span style="color:#c0c5ce;">()
+        }
+        AnyCmp =&gt; engine.</span><span style="color:#b48ead;">bool</span><span style="color:#c0c5ce;">(),
+    })
+}
+</span></code></pre><h2 id="yan-shi">演示</h2>
+<p>现在我们已经在 cubiml 中加入了数字和基本数学，这门语言更加有用了。我们终于可以尝试像第一篇文章中的斐波那契例子那样的东西了。</p>
+<p>演示中有一个常规的编辑器窗格以及一个 REPL 提示。你可以在左边的窗口中输入你的代码，然后点击 <code>Compile and run</code>，也可以在右边输入代码并按回车键。注意 <code>Compile and run</code> 也会清除 repl 的历史记录。如果出现问题，需要完全重置演示，只需刷新页面。</p>
+<script src="./p6/main.js"></script>
+<p><cubiml-demo></cubiml-demo></p>
+<h3 id="cuo-wu-xiao-xi">错误消息</h3>
+<p>到目前为止，我们还没有担心过编译器的错误信息。目前，编译器的错误信息通常都是无用的，只是在发生类型错误时说“意外类型”。<a href="/blog/subtype-inference-by-example-part-7-spanned-error-messages">下周</a>，我们将看到如何实现更好的错误信息。</p>
+
+    </div>
+
+
+</article>
+
+
+        </main>
+        <footer>
+            <p>
+                © 2021 firecodelab.com
+            </p>
+            <p>
+                
+                
+            </p>
+        </footer>
+    </div>
+</body>
+</html>

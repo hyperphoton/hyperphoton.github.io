@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="zh-cn">
+<head>
+    <meta charset="utf-8">
+    <meta name="HandheldFriendly" content="True">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="referrer" content="no-referrer-when-downgrade">
+
+    <title>[译]通过例子学子类型推理（十四）：类型注释 - 它们有什么用？</title>
+    <meta name="description" content="">
+
+    <link rel="stylesheet" href="https:&#x2F;&#x2F;firecodelab.com&#x2F;main.css">
+
+    
+
+    
+    
+</head>
+<body>
+    <a class="skip-main" href="#main">Skip to content</a>
+    <div class="container">
+        <header>
+            <h1 class="site-header">
+                <a href="https:&#x2F;&#x2F;firecodelab.com">Fire Code</a>
+            </h1>
+            <nav>
+                
+                
+                
+                <a  href="&#x2F;blog&#x2F;">博客</a>
+                
+                
+                <a  href="&#x2F;about&#x2F;">关于</a>
+                
+                
+            </nav>
+        </header>
+        <main id="main" tabindex="-1">
+            
+
+<article class="post">
+    <header>
+        <h1>[译]通过例子学子类型推理（十四）：类型注释 - 它们有什么用？</h1>
+    </header>
+
+    
+    <div class="article-info">
+        
+        <div class="article-date">2021-04-14</div>
+        
+        <div class="article-taxonomies">
+            
+                <ul class="article-tags">
+                    
+                    <li><a href="https://firecodelab.com/tags/translate/">#translate</a></li>
+                    
+                    <li><a href="https://firecodelab.com/tags/compiler/">#compiler</a></li>
+                    
+                    <li><a href="https://firecodelab.com/tags/type-inference/">#type inference</a></li>
+                    
+                </ul>
+            
+        </div>
+        
+        <div class="article-original">[<a href="https:&#x2F;&#x2F;blog.polybdenum.com&#x2F;2020&#x2F;10&#x2F;10&#x2F;subtype-inference-by-example-part-14-type-annotation.html" target="_blank">view original</a>]</div>
+        
+    </div>
+
+
+    <div class="content">
+        <p><a href="/blog/subtype-inference-by-example-part-13-conditional-flow-types-and-type-level-computation">上周</a>，我们在 cubiml 中实现了条件流约束(也就是存在多态)。今天，我们将从语言的不同方向出发，解决如何让程序员在程序中手动注释类型的问题。在这篇文章中，我将介绍为什么静态类型注释是有用的，以及如何为它们的设计提供参考，<a href="/blog/subtype-inference-by-example-part-15-type-annotations/">下周</a>将进行实际的实现。这篇文章有点啰嗦，所以如果你只想看代码而不想看所有的背景讨论，请随意跳到<a href="/blog/subtype-inference-by-example-part-15-type-annotations/">下一篇文章</a>。</p>
+<h2 id="dai-ma-sheng-cheng-he-jing-tai-lei-xing">代码生成和静态类型</h2>
+<p>在讨论为什么你实际上可能想要支持静态类型注释这个问题之前，我想先讨论一下类型注释的一个常见用途，即<em>坏</em>主意。</p>
+<p>大多数流行的静态类型语言都利用静态类型系统来<em>生成代码</em>。简单地添加或改变类型注释就会改变代码行为方式，无论是插入隐式转换还是隐式选择调用哪些函数在哪里调用。然而，这有一些缺点。</p>
+<p>最大的问题是，它使语言变得更加复杂，因为你不能再将静态类型系统和运行时语义解耦。在 TypeScript 这样的语言中，类型检查和执行是<em>独立的</em>。你不需要模拟类型检查器来确定一段给定的代码在运行时将做什么。然而，大多数编程语言都违反了这个属性。例如，考虑以下 Rust 行。它是做什么的？</p>
+<pre style="background-color:#2b303b;">
+<code class="language-rust" data-lang="rust"><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> cases = cases.</span><span style="color:#96b5b4;">into_iter</span><span style="color:#c0c5ce;">().</span><span style="color:#96b5b4;">collect</span><span style="color:#c0c5ce;">();
+</span></code></pre>
+<p>这是一个技巧问题。在这段代码出处的特定背景下，它将向量转换为哈希表。然而，这段代码几乎可以做任何事情，这取决于 <code>cases</code> 在代码的其他地方如何使用。在这种情况下，实际的行为是由类型声明控制的，这些类型声明是 300 行，并且从代码本身去掉的间接好几层，但在更大的项目中，类型声明可能在不同的文件中，甚至在一个单独的箱子里。</p>
+<p>除了远距离影响的诡异动作外，这种事情是不好的，因为这意味着静态类型系统的细节被嵌入到语言的运行时语义中。Cubiml 是一门非常简单的语言 - 不仅仅是因为它还没有时间去积累残缺，而是因为它的设计很用心，就是为了简单。你可以把类型规则放在一页上，把运行时语义放在另一页上，或多或少，而且<em>无论任何给定目的你只需要其中一页</em>。</p>
+<p>相比之下，对于大多数编程语言，你需要知道所有东西的静态类型，以确定代码在运行时将做什么，这意味着你不能像这样将语言规范模块化。静态类型系统是运行时语义的一部分。在特别糟糕的情况下（但还是很常见），即使知道类型系统也是不够的 - 你需要知道编译器的精确实现细节，以了解它将推断哪些类型，从而了解代码将做什么。</p>
+<p>遗憾的是，这种缺乏模块化设计的情况在流行的静态类型语言中几乎是普遍存在的。事实上，我所知道的唯一一个<em>没有</em>（大部分）这样做的流行语言是 TypeScript，在这种情况下，设计者<em>被迫</em>将静态和运行时语义分开，因为运行时语义已经以 JavaScript 的形式存在。</p>
+<p>除了使语言变得不必要的复杂和难以推理之外，使用静态类型来决定行为与类型推理结合得特别差。当你使用静态类型来决定调用哪些函数，而这些函数又有不同的类型反馈到类型推理中，那么你通常会以一个矛盾的循环结束，类型推理不再有定义良好定义或可预测的结果。</p>
+<p>许多语言通过定义<em>默认类型</em>来缓解这个问题，当编译器无法正常推断类型时，就会填入这些类型。虽然有时很方便(这主要是为了解决数字类型在语言中的其他设计缺陷，否则会使数字类型的使用变得过于繁琐)，但它会导致意想不到的行为，同时也抛弃了任何可预测类型推理的可能性。我在 Rust 代码中至少有一个问题是由于编译器意外地猜错了一个整数的类型而导致的。</p>
+<p>此外，默认类型实际上已经<em>阻止了</em> Rust 增加某些功能，因为默认类型意味着让类型系统<em>更精确</em>，不再是一个向后兼容的改变。简单地修复编译器来使推断类型<em>更好</em>是一个破坏性改变，因为这意味着它不再像以前那样猜测不同类型，导致以前编译的代码出现类型错误，或者在某些情况下，代码的静默表现与以前不同。</p>
+<p>但是，关于不应该做什么已经够了。现在让我们来看看为什么你可能想要静态类型注释的一些<em>好的</em>理由。</p>
+<h2 id="lei-xing-zhu-shi-de-yong-tu">类型注释的用途</h2>
+<p>显然，如果你想做一个静态类型语言，但又不想使用类型推理，那么你就需要类型注释。然而，类型推理使类型注释的传统用法变得过时了。例如，cubiml 经过精心设计，编译器可以在没有注释的情况下对整个程序进行类型检查。你可以得到传统静态类型检查的所有好处，而没有自己写注释的缺点。那么为什么要破坏这一点呢？主要有三个原因：增加编译器错误的数量，提高类型检查性能和错误信息质量，支持不可推断的类型系统特性。</p>
+<h3 id="zeng-jia-bian-yi-qi-cuo-wu-de-shu-liang">增加编译器错误的数量</h3>
+<p>类型检查器通常被设计成<em>健全的</em>，即拒绝那些在运行时执行会导致错误条件的程序（语言通常包括转义舱口，以绕过类型系统，如 Rust 的 <code>unsafe</code>，TypeScript 的 <code>any</code>，或 Ocaml 的<code>Obj.magic</code>，但是这些都是“使用风险自负”的，所以我们在讨论类型检查的健全性时，可以假装它们不存在)。</p>
+<p>然而，有时你可能想拒绝那些不会在运行时产生语言定义的错误条件的程序。也许它们违反了程序员的假设，而这个假设并不是默认类型检查的一部分，因此虽然不导致类型错误，但可能在运行时出错。</p>
+<p>手动类型注释允许你提供比编译器推断的类型更不精确的类型，从而拒绝编译器本来会接受的额外程序。例如，考虑以下代码：</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#b48ead;">let </span><span style="color:#bf616a;">f </span><span style="color:#c0c5ce;">= fun x -&gt;
+    {thing1=x + </span><span style="color:#d08770;">32</span><span style="color:#c0c5ce;">; thing2=&quot;</span><span style="color:#a3be8c;">Hello, </span><span style="color:#c0c5ce;">&quot; ^ x};
+</span></code></pre>
+<p>函数 <code>f</code> 接受一个输入，并在函数中把它当作整数和字符串。没有任何可能的值是函数可以正确操作的，但只要函数从未在任何地方被实际调用，编译器仍然会接受它。这是<em>健全的</em>，因为如果函数从未被调用，在运行时就不会产生类型错误，但这可能不是程序员的本意。</p>
+<p>然而，如果我们添加一个类型注解，<code>int -&gt; {thing1: int; thing2: str}</code>，我们可以告知编译器 <code>x</code> 期望只能是整数，因此编译器会抱怨它被当作字符串使用，即使函数从未被调用。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#b48ead;">let </span><span style="color:#bf616a;">f </span><span style="color:#c0c5ce;">= (
+    </span><span style="color:#b48ead;">fun </span><span style="color:#bf616a;">x </span><span style="color:#c0c5ce;">-&gt;
+        {thing1=x + </span><span style="color:#d08770;">32</span><span style="color:#c0c5ce;">; thing2=&quot;</span><span style="color:#a3be8c;">Hello, </span><span style="color:#c0c5ce;">&quot; ^ x}
+    : </span><span style="color:#b48ead;">int </span><span style="color:#c0c5ce;">-&gt; {thing1: </span><span style="color:#b48ead;">int</span><span style="color:#c0c5ce;">; thing2: </span><span style="color:#b48ead;">str</span><span style="color:#c0c5ce;">}
+);
+</span></code></pre><h3 id="gai-shan-xing-neng-he-cuo-wu-xin-xi">改善性能和错误信息</h3>
+<p>在推断类型时，编译器必须跟踪符合代码和类型规则的最精确的类型，这使得类型推断很慢。此外，当出现类型错误时，编译器不知道程序员的意图，因此必须考虑到在导致类型错误的推理链中的任何一点都可能出现错误。例如，考虑以下代码：</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#b48ead;">let </span><span style="color:#bf616a;">addi </span><span style="color:#c0c5ce;">= fun args -&gt; args.a + args.b;
+
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">addf </span><span style="color:#c0c5ce;">= fun args -&gt; args.a +. args.b;
+
+</span><span style="color:#b48ead;">let rec </span><span style="color:#8fa1b3;">fib_sub </span><span style="color:#c0c5ce;">= </span><span style="color:#b48ead;">fun </span><span style="color:#bf616a;">args </span><span style="color:#c0c5ce;">-&gt;
+    </span><span style="color:#b48ead;">if</span><span style="color:#c0c5ce;"> args.n &lt;= </span><span style="color:#d08770;">0 </span><span style="color:#b48ead;">then
+</span><span style="color:#c0c5ce;">        args.a
+    </span><span style="color:#b48ead;">else
+        let </span><span style="color:#bf616a;">a </span><span style="color:#c0c5ce;">= addf args </span><span style="color:#b48ead;">in
+</span><span style="color:#c0c5ce;">        fib_sub {n=args.n - </span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">; a=a; b=args.a};
+
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">fib </span><span style="color:#c0c5ce;">= </span><span style="color:#b48ead;">fun </span><span style="color:#bf616a;">n </span><span style="color:#c0c5ce;">-&gt; fib_sub {n=n; a=</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">; b=</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">}
+</span></code></pre>
+<p>这是一个经典的斐波那契数计算函数，但是有一个问题。它似乎无法决定计算值是用浮点数还是用整数。</p>
+<pre style="background-color:#2b303b;">
+<code><span style="color:#c0c5ce;">TypeError: Value is required to be a float here,
+let addi = fun args -&gt; args.a + args.b;
+
+let addf = fun args -&gt; args.a +. args.b;
+                                 ^~~~~~
+
+let rec fib_sub = fun args -&gt;
+But that value may be a integer originating here.
+        fib_sub {n=args.n - 1; a=a; b=args.a};
+
+let fib = fun n -&gt; fib_sub {n=n; a=1; b=1}
+                                   ^
+</span></code></pre>
+<p>但实际的错误在哪里呢？也许程序员的意思是要把数值计算成浮点数，而错误在于最后一行写的是 <code>1</code> 而不是 <code>1.0</code>。或者他们的意思是要用整型来计算，错误是写了 <code>addf</code> 而不是 <code>addi</code>。也可能 <code>addf</code> 本来就应该在整型上工作。</p>
+<p>编译器没有办法读懂程序员的心思，所以任何错误信息必须要么足够详细，以说明所有的可能性，要么就会遗漏潜在的重要信息。（Cubiml 目前的错误信息采取的是后一种方式）。同样，有一个长长的推理链建立在错误上，使得类型推理更慢。</p>
+<p>然而，程序员可以打破这个链条，通过一些明智放置的人工类型注释来解决这些问题。例如，也许他们的意思是函数要对浮点数进行操作：</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#b48ead;">let </span><span style="color:#bf616a;">addf </span><span style="color:#c0c5ce;">= fun args -&gt; args.a +. args.b;
+
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">fib_sub </span><span style="color:#c0c5ce;">=
+    </span><span style="color:#b48ead;">let rec </span><span style="color:#8fa1b3;">fib_sub </span><span style="color:#c0c5ce;">= </span><span style="color:#b48ead;">fun </span><span style="color:#bf616a;">args </span><span style="color:#c0c5ce;">-&gt;
+        </span><span style="color:#b48ead;">if</span><span style="color:#c0c5ce;"> args.n &lt;= </span><span style="color:#d08770;">0 </span><span style="color:#b48ead;">then
+</span><span style="color:#c0c5ce;">            args.a
+        </span><span style="color:#b48ead;">else
+            let </span><span style="color:#bf616a;">a </span><span style="color:#c0c5ce;">= addf args </span><span style="color:#b48ead;">in
+</span><span style="color:#c0c5ce;">            fib_sub {n=args.n - </span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">; a=a; b=args.a} </span><span style="color:#b48ead;">in
+
+    </span><span style="color:#65737e;">(* a manual type annotation for fib_sub *)
+    </span><span style="color:#c0c5ce;">( fib_sub :</span><span style="color:#b48ead;"> {n: int; a: float; b: float} -&gt; float </span><span style="color:#c0c5ce;">);
+
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">fib </span><span style="color:#c0c5ce;">= </span><span style="color:#b48ead;">fun </span><span style="color:#bf616a;">n </span><span style="color:#c0c5ce;">-&gt; fib_sub {n=n; a=</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">; b=</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">}
+</span></code></pre>
+<p>这里的类型注释导致了一个更简单、更有用的错误信息：</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#c0c5ce;">TypeError: Value is required </span><span style="color:#b48ead;">to</span><span style="color:#c0c5ce;"> be a </span><span style="color:#b48ead;">float</span><span style="color:#c0c5ce;"> here,
+
+    </span><span style="color:#65737e;">(* a manual type annotation for fib_sub *)
+    </span><span style="color:#c0c5ce;">( fib_sub :</span><span style="color:#b48ead;"> {n: int; a: float; b: float} -&gt; float </span><span style="color:#c0c5ce;">);
+                                      ^~~~~
+
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">fib </span><span style="color:#c0c5ce;">= fun n -&gt; fib_sub {n=n; a=</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">; b=</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">}
+But that value may be a integer originating here.
+    ( fib_sub :</span><span style="color:#b48ead;"> {n: int; a: float; b: float} -&gt; float </span><span style="color:#c0c5ce;">);
+
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">fib </span><span style="color:#c0c5ce;">= fun n -&gt; fib_sub {n=n; a=</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">; b=</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">}
+                                        ^
+</span></code></pre>
+<p>同样，如果他们的意思是对整型进行操作，所产生的错误信息也比之前更加具体：</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#c0c5ce;">TypeError: Value is required </span><span style="color:#b48ead;">to</span><span style="color:#c0c5ce;"> be a </span><span style="color:#b48ead;">float</span><span style="color:#c0c5ce;"> here,
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">addf </span><span style="color:#c0c5ce;">= fun args -&gt; args.a +. args.b;
+                                 ^~~~~~
+
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">fib_sub </span><span style="color:#c0c5ce;">=
+But that value may be a integer originating here.
+
+    </span><span style="color:#65737e;">(* a manual type annotation for fib_sub *)
+    </span><span style="color:#c0c5ce;">( fib_sub :</span><span style="color:#b48ead;"> {n: int; a: int; b: int} -&gt; int </span><span style="color:#c0c5ce;">);
+                            ^~~
+
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">fib </span><span style="color:#c0c5ce;">= fun n -&gt; fib_sub {n=n; a=</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">; b=</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">}
+</span></code></pre>
+<p>也许程序员错误地认为 <code>addf</code> 可以相加整数。在这种情况下，添加一个类型注释来检查这个假设，很快就会发现问题。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#b48ead;">let </span><span style="color:#bf616a;">addf </span><span style="color:#c0c5ce;">= fun args -&gt; args.a +. args.b;
+
+</span><span style="color:#b48ead;">let rec </span><span style="color:#8fa1b3;">fib_sub </span><span style="color:#c0c5ce;">= </span><span style="color:#b48ead;">fun </span><span style="color:#bf616a;">args </span><span style="color:#c0c5ce;">-&gt;
+    </span><span style="color:#b48ead;">if</span><span style="color:#c0c5ce;"> args.n &lt;= </span><span style="color:#d08770;">0 </span><span style="color:#b48ead;">then
+</span><span style="color:#c0c5ce;">        args.a
+    </span><span style="color:#b48ead;">else
+        </span><span style="color:#65737e;">(* let&#39;s make sure that addf is an int-adding function *)
+        </span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">addf </span><span style="color:#c0c5ce;">= (addf :</span><span style="color:#b48ead;"> {a:int; b:int} -&gt; int</span><span style="color:#c0c5ce;">) </span><span style="color:#b48ead;">in
+        let </span><span style="color:#bf616a;">a </span><span style="color:#c0c5ce;">= addf args </span><span style="color:#b48ead;">in
+</span><span style="color:#c0c5ce;">        fib_sub {n=args.n - </span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">; a=a; b=args.a};
+
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">fib </span><span style="color:#c0c5ce;">= </span><span style="color:#b48ead;">fun </span><span style="color:#bf616a;">n </span><span style="color:#c0c5ce;">-&gt; fib_sub {n=n; a=</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">; b=</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">}
+</span></code></pre><pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#c0c5ce;">TypeError: Value is required </span><span style="color:#b48ead;">to</span><span style="color:#c0c5ce;"> be a </span><span style="color:#b48ead;">float</span><span style="color:#c0c5ce;"> here,
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">addf </span><span style="color:#c0c5ce;">= fun args -&gt; args.a +. args.b;
+                                 ^~~~~~
+
+</span><span style="color:#b48ead;">let rec </span><span style="color:#8fa1b3;">fib_sub </span><span style="color:#c0c5ce;">= </span><span style="color:#b48ead;">fun </span><span style="color:#bf616a;">args </span><span style="color:#c0c5ce;">-&gt;
+But that value may be a integer originating here.
+    </span><span style="color:#b48ead;">else
+        </span><span style="color:#65737e;">(* let&#39;s make sure that addf is an int-adding function *)
+        </span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">addf </span><span style="color:#c0c5ce;">= (addf :</span><span style="color:#b48ead;"> {a:int; b:int} -&gt; int</span><span style="color:#c0c5ce;">) </span><span style="color:#b48ead;">in
+                                     </span><span style="color:#c0c5ce;">^~~
+        </span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">a </span><span style="color:#c0c5ce;">= addf args </span><span style="color:#b48ead;">in
+</span><span style="color:#c0c5ce;">        fib_sub {n=args.n - </span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">; a=a; b=args.a};
+</span></code></pre><h3 id="zhi-chi-bu-ke-tui-duan-xing-xi-tong">支持不可推断型系统</h3>
+<p>目前为止，我们只谈到了可以进行类型推理的类型系统特性，因为这是一个关于类型推理的系列。然而，每一种流行的静态类型语言都有打破类型推理的特性，通常以许多不同的方式。我怀疑这其中很大一部分只是为了解决这些语言中缺乏子类型的问题（另见：<a href="/blog/subtype-inference-by-example-part-11-the-value-restriction/#the-relaxed-value-restriction">Ocaml 的“放宽的值限制”</a>)，但不可推断的类型系统特性偶尔也确实有用。毕竟，如果你想在你的代码中验证图灵完备的不变量，你就需要一个图灵完备的类型系统来实现。</p>
+<p>这些语言通常需要程序员提供一些类型注释，然后使用类型推理来填充剩下的部分。然而，从类型推理的角度来说，这并不是那么有趣的事情。</p>
+<p><a href="/blog/subtype-inference-by-example-part-11-the-value-restriction/#%E4%BC%98%E5%8C%96">如前所述</a>，我特意在本系列中只关注那些能使最坏情况下的渐近复杂度最小化的算法，而忽略了微优化，尽管微优化对现实世界的性能往往很重要。主要原因是，渐近复杂度是一个客观的衡量标准，而真实世界的性能是主观的，高度依赖于环境。</p>
+<p>同样的问题也适用于不完全类型推理。像 Haskell 这样的语言的程序员经常会说，“在实践中”很少需要类型注释，但没有办法对这种说法进行有用的判断。一个类型系统是否完全可推理是一个<em>客观的</em>衡量标准。一种语言“在实践中”是否需要“很少”或“很多”类型注释是主观的，高度依赖于“在实践中”编写的代码。</p>
+<p>此外，在实践中需要更少的类型注释甚至不一定是好事! 全类型推理的真正优势不仅仅是为程序员节省了一些按键，让重构变得更容易，而是它简化了语言的概念模型。像 cubiml 这样的语言的宣传是，你不必担心类型理论。你可以像在 JavaScript 中一样编程，并且在你犯错误之前忽略类型检查器，只有一些小的例外。（具体来说，类型检查器大多对流和上下文不敏感，因此有时会拒绝有效的程序，而推理它们的正确性需要对流或上下文敏感）。</p>
+<p>相比之下，在部分推理编程语言中，一般的编程经验是随机添加类型注释，直到编译器关闭为止。与其说类型推理<em>简化了</em>语言的心智模型，不如说是<em>复杂化</em>了。程序员仍然要在心理上跟踪每个值会有什么样的静态类型，<em>还</em>要推理出哪些注释可以省略，哪些不能，以及为什么。如果类型注释一般可以顺利省略，那只是让程序员最终不可避免地遇到不能省略的情况时，编译器的错误就更加难以捉摸了。这也意味着，看似无害的代码改动，往往会突然导致其他代码无缘无故的可以或无法编译。</p>
+<h3 id="rong-yu-jiang-ide-zhi-chi">荣誉奖：IDE 支持</h3>
+<p>静态类型注释还有一些其他用途，我在这里没有提到。例如，一些 <a href="https://en.wikipedia.org/wiki/Integrated_development_environment">IDE</a> 利用类型注释来提升代码完成、代码搜索、提供弹出式文档提示等（有些 IDE 利用类型注释使代码完成变得<em>更差</em>，<em>抱怨</em>）。</p>
+<p>不过，我不会涉及这些，因为这“只是”用户体验和 IDE 设计的问题。CS 方面仅在可用算法制约着什么样的分析在技术上是可行的范围内才有意义，但在这些制约下，实际设计是一个主观的、以人为本的研究领域。而且正如 PyCharm 所展示的那样，太过聪明的做法很容易让你自作聪明，IDE 中花哨的分析导致的用户体验比 Sublime Text 这样“笨”但设计良好的 IDE 更差（甚至 Sublime Text 为了可用也需要禁用 TypeScript 插件）。</p>
+<h2 id="jie-lun">结论</h2>
+<p>鉴于上述情况，本系列将重点介绍类型注释，它涵盖了编译器已经可以自行推断的类型，以达到<strong>提升性能和错误信息</strong>和<strong>限制代码产生更多的编译器错误</strong>的目的。<a href="/blog/subtype-inference-by-example-part-15-type-annotations/">下周</a>，我们将看到如何在 cubiml 中添加类型注释来实现这些目标。</p>
+
+    </div>
+
+
+</article>
+
+
+        </main>
+        <footer>
+            <p>
+                © 2021 firecodelab.com
+            </p>
+            <p>
+                
+                
+            </p>
+        </footer>
+    </div>
+</body>
+</html>

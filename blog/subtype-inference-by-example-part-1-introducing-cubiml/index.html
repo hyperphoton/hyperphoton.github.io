@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="zh-cn">
+<head>
+    <meta charset="utf-8">
+    <meta name="HandheldFriendly" content="True">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="referrer" content="no-referrer-when-downgrade">
+
+    <title>[译]通过例子学子类型推理（一）：CubiML 介绍</title>
+    <meta name="description" content="">
+
+    <link rel="stylesheet" href="https:&#x2F;&#x2F;firecodelab.com&#x2F;main.css">
+
+    
+
+    
+    
+</head>
+<body>
+    <a class="skip-main" href="#main">Skip to content</a>
+    <div class="container">
+        <header>
+            <h1 class="site-header">
+                <a href="https:&#x2F;&#x2F;firecodelab.com">Fire Code</a>
+            </h1>
+            <nav>
+                
+                
+                
+                <a  href="&#x2F;blog&#x2F;">博客</a>
+                
+                
+                <a  href="&#x2F;about&#x2F;">关于</a>
+                
+                
+            </nav>
+        </header>
+        <main id="main" tabindex="-1">
+            
+
+<article class="post">
+    <header>
+        <h1>[译]通过例子学子类型推理（一）：CubiML 介绍</h1>
+    </header>
+
+    
+    <div class="article-info">
+        
+        <div class="article-date">2021-04-01</div>
+        
+        <div class="article-taxonomies">
+            
+                <ul class="article-tags">
+                    
+                    <li><a href="https://firecodelab.com/tags/translate/">#translate</a></li>
+                    
+                    <li><a href="https://firecodelab.com/tags/compiler/">#compiler</a></li>
+                    
+                    <li><a href="https://firecodelab.com/tags/type-inference/">#type inference</a></li>
+                    
+                </ul>
+            
+        </div>
+        
+        <div class="article-original">[<a href="https:&#x2F;&#x2F;blog.polybdenum.com&#x2F;2020&#x2F;07&#x2F;04&#x2F;subtype-inference-by-example-part-1-introducing-cubiml.html" target="_blank">view original</a>]</div>
+        
+    </div>
+
+
+    <div class="content">
+        <p>近年来，人们对能够自动检测常见类型 bug 的工具和编程语言越来越感兴趣，以提高产品质量和程序员的工作效率。最常见的是通过<em>静态类型系统</em>来实现，但传统的静态类型系统需要程序员进行大量的手工注释，难以使用。因此，现代编程语言越来越多地使用<em>类型推理</em>，它可以提供同样的好处，而很少或不需要手工类型注释。</p>
+<p>最流行的类型推理形式基于 <em>Hindley-Milner</em> 系统，由于缺乏对<em>子类型</em>的支持，该系统受到限制。在<a href="https://www.cs.tufts.edu/%7Enr/cs257/archive/stephen-dolan/thesis.pdf">他 2016 年的博士论文</a>中，Stephen Dolan 介绍了<em>代数子类型</em>，一个完全支持子类型的新类型推理系统。然而，作为一篇学术论文，<em>代数子类型</em>是一篇令人望而生畏的 157 页的论文，充满了形式化的数学证明，缺少实际的实现指导。</p>
+<p>作为一个在随后的三年半时间里花了很多时间来理解代数子类型并尝试在实际编程语言中实现它的人，我想分享我的研究结果。在这一系列博文中，我将向你展示如何实际实现代数子类型，或者确切地说，我称之为<em>立方双合一</em>的改进版本，它更快、更容易理解，并提供详细的、一步步的代码示例和零数学证明。</p>
+<h2 id="shi-yao-shi-zi-lei-xing-tui-li-wei-shi-yao-ta-hen-zhong-yao">什么是子类型推理，为什么它很重要？</h2>
+<p>目前大多数具有类型推理的语言都使用了 Hindley-Milner 系统的一些变体，该系统基于<em>合一</em>，即迭代<em>等价</em>类型以解决约束的过程。不幸的是，这导致了一个不灵活不直观的系统和许多语言的特定 hack 和扩展，试图解决由此产生的问题。</p>
+<p>在合一中，一起使用的值会被强制拥有相同的类型。如果你把值传递给函数，仅仅让这个值的类型与函数的参数类型<em>兼容</em>是不够的。合一强迫它与函数的参数类型<em>等价</em>。如果你把两个不同的值传递给同一个函数，它们就会被强制具有相同的类型。实际上，类型约束相对于程序的数据流是向前<em>和向后</em>传播的，这很混乱，并导致许多类型错误，而这些错误并不反映底层程序逻辑的真正错误。我们已经开发了一些变通方法来避免特定情况下的这个问题，但在任何 HM 衍生的推理系统中，基本问题依然存在。</p>
+<p>与此相反，对于子类型，类型推理是基于确保每个值的类型与它的用法<em>兼容</em>。约束跟随程序的数据流，但不会“倒流”，所以不会因为你碰巧在同一个地方传递了两个类型不同但兼容的值而出现虚假的类型错误。这使得类型推理更加强大，也更加直观。</p>
+<p>此外，我认为在现有编程语言和范式的背景下评估子类型推理低估了它的潜力，因为它促进了新的编程风格，而这些风格在很大程度上是未被探索的。特别是，大多数编程语言都依赖于程序员提供的类型注释，这意味着类型系统中的每个特征都必须在类型注释中具有相应的语法，并且必须易于用上述语法简明扼要地书写。实际上，类型系统由于需要维护一个方便的手工类型语法而受到限制。</p>
+<p>在没有手工类型注释的情况下对整个程序进行类型检查的能力消除了这一限制，意味着编程语言设计者可以自由地尝试新的和更复杂的静态分析类型，而对最终用户没有任何负担。（当然，Hindley-Milner 也不需要手动的类型注释，但由于缺乏子类型，其使用就不太实用了）。</p>
+<p>例如，编程语言 Rust 有结构推断的特征（<code>Send</code>、<code>Sync</code> 等），用于静态地保证线程安全和展开安全等属性。默认情况下，如果 Rust 中一个新类型的所有组件都是线程安全的，那么这个新类型就被认为是线程安全的，以此类推，这意味着安全检查基本上是自动运行的，只需要程序员偶尔明确关注。这里介绍的子类型推理系统能够在对编译器进行最小改动的情况下实现类似的功能，这使得在不需要对最终用户代码库进行改动的情况下，可以很容易地尝试添加这种安全检查。</p>
+<h3 id="ting-qi-lai-bu-cuo-you-shi-yao-hao-chu">听起来不错！有什么好处？</h3>
+<p>我认为实现上述愿景有几个障碍：</p>
+<h4 id="xing-neng">性能</h4>
+<p>Hindley-Milner 风格的类型推理对于单态代码来说，运行时间约为线性 O(n)。与此相反，立方双合一有最坏情况下的立方 O(n³) 时间复杂度，因此得名。基于子类型的推理更强大，但这种强大是有代价的，因为编译器要做更多的工作。</p>
+<p>这是一个没有最初看起来那么严重的障碍，因为在流行的现实世界编程语言中，最坏情况下的时间复杂度甚至都不是一个考虑因素，更不用说是一个阻碍因素了。大多数主流语言的类型系统都是无法确定的，或者至少是具有指数级的复杂性。即使是以快速编译为荣的 Go 语言，也有很多特性对编译时间施加了二次方的放大，至少有一个特性在技术上需要指数级的时间来编译。</p>
+<p>也就是说，我认为性能很重要，也是我继续研究的内容。主流编程语言的普遍做法似乎是把东西扔到墙上，希望它“在实践中足够快”。我认为也许可以定义一个语言的子集，它符合程序在实践中的编写方式，同时可以开启改进的复杂性分析，从而缩小“实践中快”和“理论中慢”之间的差距。</p>
+<h4 id="mo-kuai-xing">模块性</h4>
+<p>在实践中，大型代码库由于各种原因会使用手动类型注释，即使理论上没有必要。特别是，很可能将代码库分解成具有显式类型接口的模块或包，从而使各部分能够独立地进行类型检查，并因此进行并行的类型检查和缓存。此外，还可以在模块内添加不必要的类型注释，以约束编译器类型错误的范围，或改进 IDE 的支持，如自动完成。</p>
+<p>这意味着完全无类型注释的代码库的优势不太可能在实践中实现。然而，这并不意味着事业是徒劳的。拥有一个不需要手动注释的类型推理系统仍然是非常有用的，因为这意味着程序员可以自由地添加注释，只在他们需要并且愿意的时候，而不是被编译器中任意限制的规定所强迫。在一个不需要注释的系统中添加注释是很容易的，但反过来不可能。</p>
+<h2 id="guan-yu-lei-xing-tui-li-de-gou-liao-jiao-cheng-ni">关于类型推理的够了，教程呢？</h2>
+<p>背景和动机说完了，到了真正的教程了。立方双合一是一个灵活的框架，适用于各种各样的编程语言，但就本教程而言，我将指导你实现 <strong><a href="https://github.com/Storyyeller/cubiml-demo">cubiml</a></strong> (立方双合一元语言)，这是一个用 Rust 实现的简单的类 ML 语言，可以编译成 JavaScript。Cubiml 的设计是为了演示立方双合一，而不像现实世界语言那样有那么多无关紧要的小细节。为了保持简单，cubiml 的初始功能集被刻意地简化了 - 它甚至没有数字、字符串或有用的编译器错误信息。一旦我们了解了核心算法，我将在后续的系列文章中向你展示如何添加其他有用的功能（和错误信息）。</p>
+<h3 id="cubiml-yu-fa">Cubiml 语法</h3>
+<p>为了保持简单，cubiml 使用了类似 OCaml 的语法。OCaml 语法在编程语言设计界很流行，但它与你可能更熟悉的 C 衍生语言的语法有很大的不同，所以我在下面附上了 cubiml 语法的概述。如果你已经熟悉 OCaml 语法，可以随意跳到<a href="/blog/subtype-inference-by-example-part-2-parsing-and-biunification">下一篇</a>。</p>
+<p>请记住，cubiml 是<em>例子</em>，不是<em>指令</em>，你可以用同样的底层算法来实现各种语法和特性集的语言。</p>
+<h4 id="bu-er-he-tiao-jian-shi">布尔和条件式</h4>
+<p>在 cubiml 中，<code>if</code> 是表达式，而不是语句。一般形式是 <code>if &lt;expr&gt; then &lt;expr&gt; else &lt;expr&gt;</code> ，其中 <code>&lt;expr&gt;</code> 是子表达式。对第一个表达式进行求值，根据它是真还是假，对另外两个子表达式中的一个进行求值，<code>if</code> 表达式的结果就是该表达式的值。例如，求值 <code>if false then &quot;Hello&quot; else &quot;World&quot;</code> 的结果是 <code>&quot;World&quot;</code>。(cubiml 的初始版本没有字符串或数字 - 我们以后会添加这些，但为了演示，我还是在这里使用它们)。你可以认为这类似于一些编程语言中的三元运算符(<code>a ? b : c</code>)。</p>
+<h4 id="ji-lu-he-zi-duan">记录和字段</h4>
+<p>记录是零或多个命名值的组，类似于其他编程语言中的“对象”或“结构”，通过 <code>{name1=val1; name2=val2; ...}</code> 来定义。你可以使用通常的 <code>.name</code> 语法来访问字段的值。例如 <code>{a=true; b=&quot;Hello&quot;; c={}}.b</code> 将求值为 <code>&quot;Hello&quot;</code>。</p>
+<h4 id="han-shu">函数</h4>
+<p>在 cubiml 中，为了简单起见，所有的函数都只有一个参数。它们被定义为 <code>fun &lt;arg&gt; -&gt; &lt;expr&gt;</code>。例如，一个返回不变参数的函数可以写成 <code>fun x -&gt; x</code>。函数调用只需跟随一个参数，即写成 <code>a b</code>，其中 <code>a</code> 是要调用的函数，<code>b</code> 是参数。例如</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#c0c5ce;">(</span><span style="color:#b48ead;">fun </span><span style="color:#bf616a;">b </span><span style="color:#c0c5ce;">-&gt; </span><span style="color:#b48ead;">if</span><span style="color:#c0c5ce;"> b </span><span style="color:#b48ead;">then </span><span style="color:#c0c5ce;">&quot;</span><span style="color:#a3be8c;">Hello</span><span style="color:#c0c5ce;">&quot; </span><span style="color:#b48ead;">else </span><span style="color:#c0c5ce;">&quot;</span><span style="color:#a3be8c;">World</span><span style="color:#c0c5ce;">&quot;) </span><span style="color:#d08770;">true
+</span></code></pre>
+<p>将求值为 <code>&quot;Hello&quot;</code>，而</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#c0c5ce;">(</span><span style="color:#b48ead;">fun </span><span style="color:#bf616a;">x </span><span style="color:#c0c5ce;">-&gt; x.foo) {bar=</span><span style="color:#d08770;">false</span><span style="color:#c0c5ce;">; foo=&quot;</span><span style="color:#a3be8c;">Bob</span><span style="color:#c0c5ce;">&quot;}
+</span></code></pre>
+<p>将求值为 <code>&quot;Bob&quot;</code>。</p>
+<p>你可以绕过一个参数的限制，通过传递一个记录来模拟多个函数参数。例如，对于</p>
+<pre style="background-color:#2b303b;">
+<code class="language-js" data-lang="js"><span style="color:#b48ead;">function </span><span style="color:#8fa1b3;">sum</span><span style="color:#c0c5ce;">(</span><span style="color:#bf616a;">a</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">b</span><span style="color:#c0c5ce;">) {
+    </span><span style="color:#b48ead;">return </span><span style="color:#bf616a;">a </span><span style="color:#c0c5ce;">+ </span><span style="color:#bf616a;">b</span><span style="color:#c0c5ce;">;
+}
+
+</span><span style="color:#8fa1b3;">sum</span><span style="color:#c0c5ce;">(</span><span style="color:#d08770;">7</span><span style="color:#c0c5ce;">, </span><span style="color:#d08770;">8</span><span style="color:#c0c5ce;">)
+</span></code></pre>
+<p>在 cubiml 中，你可以这样做</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#b48ead;">let </span><span style="color:#bf616a;">sum </span><span style="color:#c0c5ce;">= fun args -&gt; args.a + args.b;
+
+sum {a=</span><span style="color:#d08770;">7</span><span style="color:#c0c5ce;">; b=</span><span style="color:#d08770;">8</span><span style="color:#c0c5ce;">}
+</span></code></pre>
+<p>在现实世界语言中，你很可能希望直接将多参数支持集成到语言中，并让类型检测器在幕后处理这些。然而，为了保持教程代码的简单性，避免不相关的细节，cubiml 没有这样做。</p>
+<h4 id="let-bang-ding">Let 绑定</h4>
+<p>如果没有将值绑定到变量名上供后续引用的能力，任何编程语言都是不完整的。在 cubiml 中，它的实现方式与你可能使用的略有不同。一般的格式是 <code>let &lt;name&gt; = &lt;expr1&gt; in &lt;expr2&gt;</code>，其中变量 <code>&lt;name&gt;</code> 在 <code>&lt;expr2&gt;</code> 的主体中可见。整个过程就是一个表达式，不管 <code>&lt;expr2&gt;</code> 求值成什么，它都会求值成什么。</p>
+<p>例如，</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#b48ead;">let </span><span style="color:#bf616a;">x </span><span style="color:#c0c5ce;">= </span><span style="color:#d08770;">7 </span><span style="color:#c0c5ce;">* </span><span style="color:#d08770;">8 </span><span style="color:#b48ead;">in </span><span style="color:#c0c5ce;">{foo=x; bar=x+</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">}
+</span></code></pre>
+<p>将求值为 <code>{foo=56; bar=57}</code>。</p>
+<p>Let 绑定可以像其他表达式一样进行嵌套。例如，</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#b48ead;">let </span><span style="color:#bf616a;">x </span><span style="color:#c0c5ce;">= </span><span style="color:#d08770;">3 </span><span style="color:#c0c5ce;">+ </span><span style="color:#d08770;">4 </span><span style="color:#b48ead;">in
+    let </span><span style="color:#bf616a;">y </span><span style="color:#c0c5ce;">= x * </span><span style="color:#d08770;">2 </span><span style="color:#b48ead;">in
+        </span><span style="color:#c0c5ce;">{x=x; y=y}
+</span></code></pre>
+<p>将求值为 <code>{x=7; y=14}</code>。</p>
+<p>这提供了一个相当于传统命令式风格代码的等价物，就像你在其他语言中可能看到的以下代码一样</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#b48ead;">let </span><span style="color:#bf616a;">x </span><span style="color:#c0c5ce;">= </span><span style="color:#d08770;">3 </span><span style="color:#c0c5ce;">+ </span><span style="color:#d08770;">4</span><span style="color:#c0c5ce;">;
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">y </span><span style="color:#c0c5ce;">= x * </span><span style="color:#d08770;">2</span><span style="color:#c0c5ce;">;
+return {x=x, y=y};
+</span></code></pre>
+<p>请注意，上述格式产生的表达式可以在任何需要表达式的上下文中使用。Cubiml 遵循 ML 的理念，即（几乎）所有的东西都是表达式，甚至包括条件、函数定义、变量绑定以及其他在某些语言中属于语句的东西。</p>
+<p>然而，这种风格在交互式地将代码输入 REPL(<a href="https://en.wikipedia.org/wiki/Read%E2%80%93eval%E2%80%93print_loop">读取 求值 打印 循环</a>) 时很不方便，因为它要求你一次输入整个程序。为了处理这个问题，cubiml 允许在代码顶层使用另一种非表达式格式。在顶层，你可以省略 <code>in &lt;expr&gt;</code> 部分，在这种情况下，let 语句会产生一个全局绑定，这对所有后续代码都是可见的。例如，这是一段可能输入到 cubiml REPL 中的代码会话。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#c0c5ce;">&gt;&gt; </span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">x </span><span style="color:#c0c5ce;">= {}
+
+{}
+
+&gt;&gt; </span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">y </span><span style="color:#c0c5ce;">= {x=x; other=</span><span style="color:#d08770;">false</span><span style="color:#c0c5ce;">}
+
+{x={}; other=</span><span style="color:#d08770;">false</span><span style="color:#c0c5ce;">}
+
+&gt;&gt; </span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">z </span><span style="color:#c0c5ce;">= {other=y.other; foo={y=y; x=x}}
+
+{other=</span><span style="color:#d08770;">false</span><span style="color:#c0c5ce;">; foo={y={x={}; other=</span><span style="color:#d08770;">false</span><span style="color:#c0c5ce;">}; x=...}}
+</span></code></pre>
+<p>如果同时输入多个项，也可以用分号分隔多个顶层定义。</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#c0c5ce;">&gt;&gt; </span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">a </span><span style="color:#c0c5ce;">= z.foo.y; </span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">b </span><span style="color:#c0c5ce;">= </span><span style="color:#d08770;">true
+
+true
+
+</span><span style="color:#c0c5ce;">&gt;&gt; </span><span style="color:#b48ead;">if</span><span style="color:#c0c5ce;"> b </span><span style="color:#b48ead;">then</span><span style="color:#c0c5ce;"> y </span><span style="color:#b48ead;">else</span><span style="color:#c0c5ce;"> x
+
+{x={}; other=</span><span style="color:#d08770;">false</span><span style="color:#c0c5ce;">}
+</span></code></pre><h4 id="di-gui-let-bang-ding">递归 let 绑定</h4>
+<p>有时，人们希望有些函数可以递归地调用自己。不幸的是，这在上述结构中是不可能的，因为普通的 let 表达式只能引用已经定义好的变量。</p>
+<p>为了支持递归，cubiml 提供了<em>递归的 let 表达式</em> ，它通过 <code>let rec</code> 来定义，并允许定义的变量引用自己。例如，你可以定义一个递归的 fibonacci 函数，如下所示：</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#b48ead;">let rec </span><span style="color:#8fa1b3;">fib </span><span style="color:#c0c5ce;">= </span><span style="color:#b48ead;">fun </span><span style="color:#bf616a;">x </span><span style="color:#c0c5ce;">-&gt;
+    </span><span style="color:#b48ead;">if</span><span style="color:#c0c5ce;"> x &lt;= </span><span style="color:#d08770;">1 </span><span style="color:#b48ead;">then
+        </span><span style="color:#d08770;">1
+    </span><span style="color:#b48ead;">else
+</span><span style="color:#c0c5ce;">        fib(x - </span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">) + fib(x - </span><span style="color:#d08770;">2</span><span style="color:#c0c5ce;">)
+</span></code></pre>
+<p>为了避免代码引用还不存在的变量，<code>let rec</code> 变量定义的右侧被限制为函数定义。这是不必要的严格，但这是一个简单的检查，很容易实现，目前已经足够好了。</p>
+<h4 id="xiang-hu-di-gui">相互递归</h4>
+<p>上述语法适用于单函数引用自身，但在某些情况下，你可能希望有多个函数相互引用。与 <code>let</code> 的情况不同，简单地嵌套 <code>let rec</code> 是行不通的。因此，<code>let rec</code> 允许<em>多个</em>变量绑定，用 <code>and</code> 分隔。例如，你可以定义相互递归的 <code>even</code> 和 <code>odd</code> 函数，如下所示：</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#b48ead;">let rec </span><span style="color:#8fa1b3;">even </span><span style="color:#c0c5ce;">= </span><span style="color:#b48ead;">fun </span><span style="color:#bf616a;">x </span><span style="color:#c0c5ce;">-&gt; </span><span style="color:#b48ead;">if</span><span style="color:#c0c5ce;"> x == </span><span style="color:#d08770;">0 </span><span style="color:#b48ead;">then </span><span style="color:#d08770;">true </span><span style="color:#b48ead;">else</span><span style="color:#c0c5ce;"> odd(x</span><span style="color:#d08770;">-1</span><span style="color:#c0c5ce;">)
+    </span><span style="color:#b48ead;">and </span><span style="color:#bf616a;">odd </span><span style="color:#c0c5ce;">= </span><span style="color:#b48ead;">fun </span><span style="color:#bf616a;">x </span><span style="color:#c0c5ce;">-&gt; </span><span style="color:#b48ead;">if</span><span style="color:#c0c5ce;"> x == </span><span style="color:#d08770;">0 </span><span style="color:#b48ead;">then </span><span style="color:#d08770;">false </span><span style="color:#b48ead;">else</span><span style="color:#c0c5ce;"> even(x</span><span style="color:#d08770;">-1</span><span style="color:#c0c5ce;">)
+</span></code></pre><h4 id="case-lei-xing-he-pi-pei">Case 类型和匹配</h4>
+<p>有时你需要以类型安全的方式根据运行时数据做出不同的决定。Cubiml 通过 <em>case 类型</em> 来支持这一点，也称为 <em>sum 类型</em> 、<em>enums</em> 或 <em>variants</em>。并非所有的语言都有 sum 类型，所以你可能对这个概念不熟悉。基本上，它的工作方式是，可以用标签来包装值，之后再对其进行匹配。匹配表达式有分支，根据标签的运行时值执行不同的代码。最关键的是，每个匹配分支都可以访问该特定标签的原始包装值的静态类型。你可以把它想象成一个更简单的、静态检查版的 Java 访客模式，或者 C 语言中联合体上的巨型 switch 语句。</p>
+<p>要包装一个值，请在它的前面加上一个重大的 (`) 字符和一个大写的 Tag。例如： <code> `Foo {hello=&quot;Hello&quot;}</code></p>
+<p>你可以在后面对其进行匹配，如下所示</p>
+<pre style="background-color:#2b303b;">
+<code class="language-ml" data-lang="ml"><span style="color:#c0c5ce;">
+</span><span style="color:#b48ead;">let </span><span style="color:#bf616a;">calculate_area </span><span style="color:#c0c5ce;">= fun shape -&gt;
+    </span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> shape </span><span style="color:#b48ead;">with
+          </span><span style="color:#c0c5ce;">`Circle </span><span style="color:#bf616a;">v </span><span style="color:#c0c5ce;">-&gt; v.rad *. v.rad *. </span><span style="color:#d08770;">3.1415926
+        </span><span style="color:#b48ead;">| </span><span style="color:#c0c5ce;">`Rectangle </span><span style="color:#bf616a;">v </span><span style="color:#c0c5ce;">-&gt; v.length *. v.height
+
+calculate_area `Circle {rad=</span><span style="color:#d08770;">6.7</span><span style="color:#c0c5ce;">}
+calculate_area `Rectangle {height=</span><span style="color:#d08770;">1.1</span><span style="color:#c0c5ce;">; length=</span><span style="color:#d08770;">2.2</span><span style="color:#c0c5ce;">}
+</span></code></pre>
+<p>请注意，在 Circle 分支中，代码可以访问 rad 字段，在 Rectangle 分支中，可以访问 length 和 height 字段。Case 类型和匹配使你可以在程序流中将不同的数据类型混合在一起之后，从本质上“取消混合”。如果没有 case 类型，这将无法以类型安全的方式进行。</p>
+<h2 id="zong-jie">总结</h2>
+<p>以上就是 cubiml 语法的概述。(我告诉过你这很简单！)。在<a href="/blog/subtype-inference-by-example-part-2-parsing-and-biunification">下一篇</a>中，我们将开始实现编译器的前端，它负责解析输入，并将特定语法细节转换成对类型检查器的调用。</p>
+
+    </div>
+
+
+</article>
+
+
+        </main>
+        <footer>
+            <p>
+                © 2021 firecodelab.com
+            </p>
+            <p>
+                
+                
+            </p>
+        </footer>
+    </div>
+</body>
+</html>
